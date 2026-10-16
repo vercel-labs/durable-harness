@@ -130,6 +130,9 @@ export class ModelSteps {
     private readonly options: ModelStepsOptions = {}
   ) {}
 
+  /** For `gatewayProxy({ trackBody })`: only a traced drive's model requests are read before they're forwarded. */
+  readonly wantsBody = (request: { method: string; path: string }): boolean => this.ctx.tracing !== undefined && !this.closed && isModelRequest(request);
+
   /**
    * For `gatewayProxy({ track })`: a model request started; returns its end.
    * Every model request is also marked on the session's live stream

@@ -1,7 +1,7 @@
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FIRST_OUTPUT, gatewayCredential, gatewayProxy, gatewayToken } from './gateway.ts';
+import { FIRST_OUTPUT, gatewayCredential, gatewayProxy, gatewayToken, TRACKED_BODY_MAX_BYTES } from './gateway.ts';
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -188,6 +188,7 @@ describe('gatewayProxy', () => {
       credential: async () => 'secret-upstream-key',
       token: KEY,
       track: (request) => (tracked.push(request), Object.assign(finish, { capture: true })),
+      trackBody: () => true,
     });
     closers.push(proxy.close);
     const response = await fetch(`${proxy.url}/v1/messages`, {
@@ -215,6 +216,26 @@ describe('gatewayProxy', () => {
     expect((await finished).response).toBe(text);
     expect(target.seen[0]!.body).toBe(body);
   });
+  it('streams a body `track` did not ask for, and tracks the request without it', async () => {
+    const target = await upstream();
+    const tracked: unknown[] = [];
+    const proxy = await gatewayProxy({ target: target.url, credential: async () => 'secret', token: KEY, track: (request) => void tracked.push(request) });
+    closers.push(proxy.close);
+    const body = JSON.stringify({ messages: [{ role: 'user', content: 'hello' }] });
+    await (await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: keyed, body })).text();
+    expect(tracked).toEqual([{ method: 'POST', path: '/v1/messages' }]);
+    expect(target.seen[0]!.body).toBe(body);
+  });
+  it('forwards a body over the cap whole, and tracks the request without it', async () => {
+    const target = await upstream();
+    const tracked: unknown[] = [];
+    const proxy = await gatewayProxy({ target: target.url, credential: async () => 'secret', token: KEY, track: (request) => void tracked.push(request), trackBody: () => true });
+    closers.push(proxy.close);
+    const body = JSON.stringify({ messages: 'x'.repeat(TRACKED_BODY_MAX_BYTES + 1) });
+    await (await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: keyed, body })).text();
+    expect(tracked).toEqual([{ method: 'POST', path: '/v1/messages' }]);
+    expect(target.seen[0]!.body).toBe(body);
+  });
   it('passes the Gateway model header to tracking without exposing other headers', async () => {
     const target = await upstream();
     const starts: unknown[] = [];
@@ -223,6 +244,7 @@ describe('gatewayProxy', () => {
       credential: async () => 'upstream-secret',
       token: 'child-secret',
       track: request => { starts.push(request); },
+      trackBody: () => true,
     });
     closers.push(proxy.close);
     const response = await fetch(`${proxy.url}/v3/ai/language-model`, {

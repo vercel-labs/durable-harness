@@ -131,7 +131,7 @@ export function referenceHarness(options: ReferenceHarnessOptions): Harness {
       let proxy: GatewayProxy | undefined;
       // The child's key: a fresh one per drive, the only one the proxy forwards.
       const key = gatewayToken();
-      if (options.modelUrl) proxy = await gatewayProxy({ target: options.modelUrl, credential: async () => 'reference', token: key, track: steps.request });
+      if (options.modelUrl) proxy = await gatewayProxy({ target: options.modelUrl, credential: async () => 'reference', token: key, track: steps.request, trackBody: steps.wantsBody });
       const env = { ...options.env, ...(proxy ? { FAKE_CLI_MODEL_URL: `${proxy.url}/v1/model`, FAKE_CLI_MODEL_KEY: key } : {}) };
       const proc = await host
         .spawn(ctx.runId, {

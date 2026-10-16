@@ -49,10 +49,17 @@ export interface GatewayProxyOptions {
    * forwarded. The function it returns, if any, is called once that request
    * is over: its response ended, failed, or its connection closed (the child
    * died, the proxy closed). `ModelSteps.request` is one: the drive's model
-   * steps. With `track`, the proxy reads a request's body before forwarding
-   * it, so `track` sees what was asked.
+   * steps.
    */
   track?: (request: TrackedRequest) => TrackEnd | void;
+  /**
+   * Whether `track` gets this request's body (`TrackedRequest.body`). Only
+   * then does the proxy read the body before forwarding it, up to
+   * `TRACKED_BODY_MAX_BYTES`. A larger one streams through untouched, and
+   * `track` gets no body. Without `trackBody`, every body streams through.
+   * `ModelSteps.wantsBody` is one: only a traced drive's model requests.
+   */
+  trackBody?: (request: { method: string; path: string }) => boolean;
   /**
    * Forward only requests that carry this value (`authorization: Bearer
    * <token>` or `x-api-key: <token>`), or one of these values; anything
@@ -69,6 +76,9 @@ export interface GatewayProxyOptions {
    */
   token: string | readonly string[];
 }
+
+/** The most of a request's body the proxy reads for `track` (the VM handler's own cap). */
+export const TRACKED_BODY_MAX_BYTES = 4 * 1024 * 1024;
 
 /** A fresh placeholder key for a child, to give `gatewayProxy` as its `token`: one per proxy, never reused. */
 export const gatewayToken = (prefix = 'harness-world'): string => `${prefix}-${randomUUID()}`;
@@ -134,8 +144,9 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
       return void res.end('harness-world-process gateway proxy: the request does not carry the key this proxy gave its child');
     }
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
-    // Tracked: the body is read first, so the tracker sees the request.
-    const body = options.track && hasBody ? await readAll(req) : undefined;
+    // Read first, and only for a tracker that asks for it (a traced model request), so it sees what was asked.
+    const read = options.track && hasBody && options.trackBody?.({ method: req.method ?? 'GET', path: req.url ?? '/' }) ? await readUpTo(req, TRACKED_BODY_MAX_BYTES) : undefined;
+    const body = read && !read.more ? Buffer.concat(read.head) : undefined;
     const model = req.headers['ai-language-model-id'];
     const ended = options.track?.({
       method: req.method ?? 'GET',
@@ -165,7 +176,7 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
     const upstream = await fetch(`${target}${req.url ?? '/'}`, {
       method: req.method ?? 'GET',
       headers,
-      ...(body ? { body } : hasBody ? { body: Readable.toWeb(req) as ReadableStream, duplex: 'half' } : {}),
+      ...(body ? { body } : hasBody ? { body: Readable.toWeb(read ? Readable.from(rejoin(read.head, req)) : req) as ReadableStream, duplex: 'half' } : {}),
       signal: abort.signal,
     } as RequestInit);
     const out: Record<string, string> = {};
@@ -1123,10 +1134,40 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
   };
 }
 
-async function readAll(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks);
+/**
+ * A body's first chunks, up to `max` bytes: `more` when the body goes on past
+ * them, the rest left in `req`, paused (leaving a `for await` early would
+ * destroy it).
+ */
+function readUpTo(req: IncomingMessage, max: number): Promise<{ head: Buffer[]; more: boolean }> {
+  return new Promise((resolve, reject) => {
+    const head: Buffer[] = [];
+    let size = 0;
+    const done = (more: boolean) => {
+      req.off('data', data).off('end', end).off('error', error);
+      resolve({ head, more });
+    };
+    const data = (chunk: Buffer) => {
+      head.push(chunk);
+      size += chunk.length;
+      if (size > max) {
+        req.pause();
+        done(true);
+      }
+    };
+    const end = () => done(false);
+    const error = (err: Error) => {
+      req.off('data', data).off('end', end).off('error', error);
+      reject(err);
+    };
+    req.on('data', data).once('end', end).once('error', error);
+  });
+}
+
+/** The chunks `readUpTo` took, then the rest of the body. */
+async function* rejoin(head: readonly Buffer[], req: IncomingMessage): AsyncGenerator<Buffer> {
+  yield* head;
+  for await (const chunk of req) yield chunk as Buffer;
 }
 
 function parseBody(body: Buffer): unknown {

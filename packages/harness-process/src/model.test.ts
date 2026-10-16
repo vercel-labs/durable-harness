@@ -47,6 +47,15 @@ describe('ModelSteps', () => {
     expect(isModelRequest({ method: 'HEAD', path: '/api/hello' })).toBe(false);
   });
 
+  it('asks for a model request\'s body only in a traced drive', () => {
+    const { ctx } = stubCtx(stateWith());
+    expect(new ModelSteps(ctx).wantsBody(post)).toBe(false);
+    const traced = { ...ctx, tracing: { modelCall: async () => undefined } } as typeof ctx;
+    const steps = new ModelSteps(traced);
+    expect(steps.wantsBody(post)).toBe(true);
+    expect(steps.wantsBody({ method: 'POST', path: '/v1/messages/count_tokens' })).toBe(false);
+  });
+
   it('is armed by a process crash at the model or any step', () => {
     expect(modelCrashArmed(stateWith())).toBe(false);
     expect(modelCrashArmed(stateWith({ armed: 'tool' }))).toBe(false);
