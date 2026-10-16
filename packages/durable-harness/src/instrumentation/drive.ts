@@ -338,6 +338,9 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
       // Tracing never fails a drive.
     }
     await streams.flush();
+    // Stored: what this process kept of the run's turns goes (the next drive reads them again), so a long-lived
+    // process holds no turn it isn't driving.
+    streams.forget(ctx.runId);
   }
 }
 

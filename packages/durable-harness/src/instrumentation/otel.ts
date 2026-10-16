@@ -126,7 +126,8 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   const audience = options.audience ?? 'unknown';
   let provider: BasicTracerProvider | undefined;
   const worlds = new WeakMap<World, { run: AgentRun; streams: TraceStreams }>();
-  const live = new Set<TraceStreams>();
+  // Weakly: a World the app let go (one per store, say) takes its checkpoints with it.
+  const live = new Set<WeakRef<TraceStreams>>();
 
   return {
     register() {
@@ -146,7 +147,7 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
           const streams = new TraceStreams(world, (error) => onError(error, { phase: 'checkpoint' }));
           traced = { streams, run: createAgentRun({ telemetry, checkpointer: streams.checkpointer, onError }) };
           worlds.set(world, traced);
-          live.add(streams);
+          live.add(new WeakRef(streams));
         }
         return traced;
       };
@@ -195,14 +196,19 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
               const stepIndex = numbered.next++;
               return turn.attempt({ stepIndex, attempt: await numbered.drive });
             },
-            flush: () => streams.flush(),
+            async flush() {
+              await streams.flush();
+              // Stored: what this process kept of the run's turns goes, and a later turn() reads it again.
+              streams.forget(runId);
+            },
           };
         },
       };
       (globalThis as { [AGENT_RUNS]?: AgentRunsHook })[AGENT_RUNS] = hook;
     },
     async forceFlush() {
-      await Promise.all([...live].map((streams) => streams.flush()));
+      for (const ref of live) if (!ref.deref()) live.delete(ref);
+      await Promise.all([...live].map((ref) => ref.deref()?.flush()));
       await provider?.forceFlush();
     },
     async shutdown() {
