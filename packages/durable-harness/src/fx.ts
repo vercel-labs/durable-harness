@@ -73,22 +73,29 @@ export interface FxToolsOptions {
 }
 
 /**
+ * One of `fxTools()`'s tools: a libfx host tool that says whether a call is
+ * safe to run twice, as `createFxAgent()` requires of its tools (libfx's
+ * `FxAgentHostTool`).
+ */
+export type FxKernelTool = FxHostTool & { idempotent: boolean };
+
+/**
  * libfx's kernel tools on `workspace` (`virtual()` or `sandbox()`), for
  * `createFxAgent({ tools })`: six libfx host tools, in the order fx
  * advertises them. Spread them into the agent's `tools` array with the
  * app's own. Install `just-bash` for `virtual()`, `@vercel/sandbox` for
  * `sandbox()`.
  */
-export function fxTools(workspace: Workspace, options: FxToolsOptions = {}): FxHostTool[] {
+export function fxTools(workspace: Workspace, options: FxToolsOptions = {}): FxKernelTool[] {
   const environment = resolveEnvironment(workspace);
   const { world } = options;
   const worldOf = world ? () => world : defaultWorld;
   // Each tool carries the workspace-tool brand, so claudeCode() and codex() refuse them.
   if (environment.kind === 'sandbox') {
     // The session factory loads (with `@vercel/sandbox`) on the first acquire.
-    return fxAgentTools({ kind: 'sandbox' }, { world: worldOf, acquire: environment.acquire }) as unknown as FxHostTool[];
+    return fxAgentTools({ kind: 'sandbox' }, { world: worldOf, acquire: environment.acquire }) as unknown as FxKernelTool[];
   }
-  return fxAgentTools(environment.workspace, { isolation: environment.isolation, world: worldOf }) as unknown as FxHostTool[];
+  return fxAgentTools(environment.workspace, { isolation: environment.isolation, world: worldOf }) as unknown as FxKernelTool[];
 }
 
 const LOCAL = Symbol.for('durable-harness//fx-local-world');
