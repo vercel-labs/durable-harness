@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { codexStandIn } from '../scenarios/codex.ts';
 import { admit, ready, ScriptedHost } from '../scenarios/opencode.ts';
 import { newHost, type TrackedHost, turnsEnded } from '../scenarios/process.ts';
-import { expectToolTurn, kernelTurn, type Tracing, tracing } from '../src/agent-runs.ts';
+import { checkpointText, expectToolTurn, kernelTurn, type Tracing, tracing } from '../src/agent-runs.ts';
 import { storageFor } from '../src/worlds.ts';
 
 /**
@@ -45,24 +45,30 @@ import { storageFor } from '../src/worlds.ts';
  */
 
 const MARKER = 'zebra-7f3a';
-let t: Tracing;
-beforeAll(() => {
-  t = tracing();
-});
-afterAll(() => t.close());
 
 const disposers: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
   for (const d of disposers.splice(0).reverse()) await Promise.resolve(d()).catch(() => {});
 });
 
-const turn = (name: string, harness: Harness, prompt: string, done: (s: SessionState) => boolean) => kernelTurn(t, disposers, name, harness, prompt, done);
 
 const SHOUT_PROMPT = `shout ${MARKER}`;
 const modelDone = (n: number) => (s: SessionState) => s.effectOrder.filter((e) => e.name === 'model' && e.status === 'completed').length >= n;
 const checkpointed = (s: SessionState) => s.effects.get('checkpoint:0')?.status === 'completed';
 
-describe('Agent Runs: one tool turn per server harness', () => {
+// Each harness twice: with content recorded (what Agent Runs shows of it), and with the default capture (an unknown
+// audience: metadata only), whose spans and checkpoints must hold none of it.
+describe.each([
+  { content: true, mode: 'content recorded' },
+  { content: false, mode: 'metadata only' },
+])('Agent Runs: one tool turn per server harness ($mode)', ({ content }) => {
+  let t: Tracing;
+  beforeAll(() => {
+    t = tracing({ content });
+  });
+  afterAll(() => t.close());
+  const turn = (name: string, harness: Harness, prompt: string, done: (s: SessionState) => boolean) => kernelTurn(t, disposers, name, harness, prompt, done);
+
   it('Pi (harness-world-pi)', async () => {
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage(fauxToolCall('shout', { text: MARKER }), { stopReason: 'toolUse' }), fauxAssistantMessage(fauxText('Shouted.'))]);
@@ -78,8 +84,8 @@ describe('Agent Runs: one tool turn per server harness', () => {
       },
     };
     const harness = piHarness({ model: faux.getModel(), streamFn: models.streamSimple.bind(models), systemPrompt: 'Be loud.', tools: [shout] });
-    const { sessionId, spans } = await turn('pi', harness, SHOUT_PROMPT, modelDone(2));
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'pi', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true });
+    const { sessionId, spans, checkpoints } = await turn('pi', harness, SHOUT_PROMPT, modelDone(2));
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'pi', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true, content, checkpoints });
   });
 
   const libfxAddon = join(dirname(createRequire(import.meta.url).resolve('libfx')), `libfx.${process.platform}-${process.arch}.node`);
@@ -104,8 +110,8 @@ describe('Agent Runs: one tool turn per server harness', () => {
       },
     };
     const harness = fxHarness({ createFxEngine: createFxEngine as never, apiKey: 'test', model: 'test/model', tools: [shout], fetch });
-    const { sessionId, spans } = await turn('fx', harness, SHOUT_PROMPT, checkpointed);
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'fx', tool: 'shout', modelContent: true, model: 'test/model', usage: true });
+    const { sessionId, spans, checkpoints } = await turn('fx', harness, SHOUT_PROMPT, checkpointed);
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'fx', tool: 'shout', modelContent: true, model: 'test/model', usage: true, content, checkpoints });
   });
 
   it('AI SDK ToolLoopAgent (durable-ai-sdk)', async () => {
@@ -115,8 +121,8 @@ describe('Agent Runs: one tool turn per server harness', () => {
       replay: 'never' as const,
     };
     const harness = aiSdkHarness({ model, instructions: 'Be loud.', tools: { shout } });
-    const { sessionId, spans } = await turn('ai-sdk', harness, SHOUT_PROMPT, checkpointed);
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'ai-sdk', tool: 'shout', modelContent: true, usage: true });
+    const { sessionId, spans, checkpoints } = await turn('ai-sdk', harness, SHOUT_PROMPT, checkpointed);
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'ai-sdk', tool: 'shout', modelContent: true, usage: true, content, checkpoints });
   });
 
   it('Pi with pi-durable (your own Harness on openWorldStorage)', async () => {
@@ -137,7 +143,8 @@ describe('Agent Runs: one tool turn per server harness', () => {
     expect((await (await root.submit({ type: 'input', content: SHOUT_PROMPT }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status).toBe('done');
     await harness.close(BACKGROUND_CONTEXT);
     const spans = await t.finishedTurn(storage.sessionId, 'pi-durable');
-    expectToolTurn(spans, { sessionId: storage.sessionId, marker: MARKER, harness: 'pi-durable', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true });
+    const checkpoints = await checkpointText(open.world, storage.sessionId);
+    expectToolTurn(spans, { sessionId: storage.sessionId, marker: MARKER, harness: 'pi-durable', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true, content, checkpoints });
   });
 
   /** The scripted process CLIs: `call <tool> <json>` makes one bridged tool call; what they say goes through the proxy to the model. */
@@ -157,12 +164,12 @@ describe('Agent Runs: one tool turn per server harness', () => {
     const { api, sandbox } = standIn();
     disposers.push(() => api.dispose());
     const harness = claudeCodeHarness({ builtins: false, tools: workspaceTools({ confirmMs: 3000 }), sandbox, executable: process.execPath, sdk: fakeSdk({ remoteModel: true }), credential: async () => 'test-key', gatewayUrl: model.url });
-    const { sessionId, spans } = await turn('claude-code', harness, WRITE_PROMPT, (s) => turnsEnded(s) >= 1);
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'claude-code', tool: 'write_file' });
+    const { sessionId, spans, checkpoints } = await turn('claude-code', harness, WRITE_PROMPT, (s) => turnsEnded(s) >= 1);
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'claude-code', tool: 'write_file', content, checkpoints });
   });
 
   it('Codex (fake app-server in the stand-in sandbox, its model behind the gateway handler)', async () => {
-    const { sessionId, spans } = await processTurn('codex', (_host, model) => {
+    const { sessionId, spans, checkpoints } = await processTurn('codex', (_host, model) => {
       const { harness, dispose } = codexStandIn({
         builtins: false,
         tools: workspaceTools({ confirmMs: 3000 }),
@@ -174,7 +181,7 @@ describe('Agent Runs: one tool turn per server harness', () => {
       disposers.push(dispose);
       return harness;
     });
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'codex', tool: 'write_file' });
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'codex', tool: 'write_file', content, checkpoints });
   });
 
   it('OpenCode (scripted host, its model behind the proxy)', async () => {
@@ -197,7 +204,7 @@ describe('Agent Runs: one tool turn per server harness', () => {
       h.commit(['session.step.started'], ['session.text.ended', { text: 'Done.' }], ['session.step.ended'], ['session.execution.succeeded']);
       await h.take('close');
     };
-    const { sessionId, spans } = await processTurn('opencode', (host, model) =>
+    const { sessionId, spans, checkpoints } = await processTurn('opencode', (host, model) =>
       opencodeHarness({
         tools: workspaceTools({ confirmMs: 3000 }),
         root: host.root,
@@ -211,6 +218,6 @@ describe('Agent Runs: one tool turn per server harness', () => {
       })
     );
     expect(errors).toEqual([]);
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'opencode', tool: 'write_file' });
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'opencode', tool: 'write_file', content, checkpoints });
   });
 });

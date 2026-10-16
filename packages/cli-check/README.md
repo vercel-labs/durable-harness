@@ -81,8 +81,10 @@ reads them: the `invoke_agent` root in the `eve.agent` scope at schema 4, an
 `agent.step` per model call with its `chat` span and the tool calls it asked
 for under it, all in the turn's trace, and a tool span carrying the id of the
 call the model's reply names (Agent Runs joins the two by it)
-(`src/agent-runs.ts`). That a session that is not public records only
-metadata is durable-harness's own `test/agent-runs.test.ts`.
+(`src/agent-runs.ts`). Each harness runs twice: once with content recorded,
+and once with the default capture for its `unknown` audience, metadata only,
+where the turn's marker must be in no span (attribute, event or status) and
+in no line of the session's checkpoint streams.
 
 `test/agent-runs-live.test.ts` does the same with the real CLIs and AI Gateway
 models, and also checks model ids, the prompt in the model's input and token
