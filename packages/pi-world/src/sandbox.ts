@@ -63,11 +63,18 @@ export const SANDBOX_NO_WORLD =
 /** What a call says once its storage writes nothing more (closed, or another process took the session). */
 export const SANDBOX_ENDED = "durable-harness: this invocation of the session holds nothing more (it closed, or another one took the session over): it runs nothing in the session's sandbox";
 
-/** A call that did not run: its sandbox could not be attached (busy, booting, contended). Nothing reached the VM. */
+/**
+ * A call that did not run: its sandbox could not be attached. Nothing reached
+ * the VM. Busy, booting or contended (no cause, a `Yield`, or `retry`):
+ * `NOT_RUN`, so the model may retry. Anything else says what failed (a
+ * missing project link, a refused credential), as harness-hands' `NotRun`
+ * does, so the model isn't told to retry what no retry fixes.
+ */
 export class NotRunError extends Error {
   readonly code = 'ENOTRUN';
-  constructor(cause?: unknown) {
-    super(NOT_RUN, cause !== undefined ? { cause } : undefined);
+  constructor(cause?: unknown, retry = cause === undefined || (cause as { name?: unknown }).name === 'Yield') {
+    const reason = retry ? '' : String((cause as Error)?.message ?? cause).replace(/\s+/g, ' ').slice(0, 300);
+    super(retry ? NOT_RUN : `Not run: the sandbox could not be attached (${reason})`, cause !== undefined ? { cause } : undefined);
     this.name = 'NotRunError';
   }
 }
@@ -153,7 +160,7 @@ export class SandboxSession {
     if (storage.signal.aborted || machine.signal.aborted || machine.workspace.lost) {
       void machine.close().catch(() => {});
       if (storage.signal.aborted) throw new Error(SANDBOX_ENDED);
-      throw new NotRunError(new Error('the sandbox link was lost as it was attached'));
+      throw new NotRunError(new Error('the sandbox link was lost as it was attached'), true);
     }
     if (machine.workspace.root !== WORKSPACE_ROOT) {
       void machine.close().catch(() => {});
