@@ -9,7 +9,7 @@ import { agentRunsHook } from 'harness-world/agent-runs';
 import { Parked } from 'harness-world/errors';
 import { readJsonLines } from 'harness-world/streams';
 import { afterAll, describe, expect, it } from 'vitest';
-import { checkpointStreamName } from '../src/instrumentation/checkpoints.ts';
+import { checkpointStreamName, TRACE_IO_MS } from '../src/instrumentation/checkpoints.ts';
 import { agentRuns } from '../src/instrumentation/otel.ts';
 
 const exporter = new InMemorySpanExporter();
@@ -28,13 +28,13 @@ async function localWorld(): Promise<LocalWorld> {
   return world;
 }
 
-/** The same World as another process sees it: its own Agent Runs state. With `write`, its stream writes go there. */
-function processOf(world: World, write?: World['streams']['write']): World {
+/** The same World as another process sees it: its own Agent Runs state. With `write` or `getChunks`, its stream writes or reads go there. */
+function processOf(world: World, write?: World['streams']['write'], getChunks?: World['streams']['getChunks']): World {
   const bound = (target: object, key: string | symbol) => {
     const value = Reflect.get(target, key);
     return typeof value === 'function' ? value.bind(target) : value;
   };
-  const streams = new Proxy(world.streams, { get: (target, key) => (key === 'write' && write ? write : bound(target, key)) });
+  const streams = new Proxy(world.streams, { get: (target, key) => (key === 'write' && write ? write : key === 'getChunks' && getChunks ? getChunks : bound(target, key)) });
   return new Proxy(world, { get: (target, key) => (key === 'streams' ? streams : bound(target, key)) });
 }
 
@@ -174,6 +174,51 @@ describe('Agent Runs across drives and processes', () => {
     expect(spans.find((s) => s.name === 'invoke_agent recovery')?.attributes['agent.turn.outcome']).toBe('completed');
   }, 30_000);
 
+  it('continues a turn under its own span when a follow-up waits behind it', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_followup';
+    const first = harness(async (ctx) => {
+      await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' }, placed: ['sub_1'] }, async () => 'ok');
+      await ctx.effect('tool:call_1', { name: 'tool.lookup', replay: 'safe', input: { q: 'x' } }, async () => {
+        throw new Parked();
+      });
+    });
+    const ctx = driveContext(world, runId);
+    await expect(hook.drive(first, ctx)).rejects.toBeInstanceOf(Parked);
+
+    // The next drive, on the same log, goes on with sub_1's turn; sub_2 waits until its own model call places it.
+    const state = ctx.state();
+    const followUp: Submission = { id: 'sub_2', kind: 'prompt', text: 'and then?', receivedAt: new Date() };
+    state.submissions.push(followUp);
+    const placing = ctx.effect.bind(ctx);
+    const next = {
+      ...ctx,
+      pending: () => (state.placed.has(followUp.id) ? [] : [followUp]),
+      effect: (key: string, effect: { name: string; placed?: string[] }, fn: (io: never) => Promise<unknown>) => {
+        for (const id of effect.placed ?? []) state.placed.add(id);
+        return placing(key, effect as never, fn as never);
+      },
+    } as unknown as DriveContext;
+    await hook.drive(harness(async (ctx) => {
+      await ctx.effect('tool:call_1', { name: 'tool.lookup', replay: 'safe', input: { q: 'x' } }, async () => 'found');
+      await ctx.effect('model:1', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => 'done');
+      await ctx.effect('model:2', { name: 'model', replay: 'safe', input: { model: 'test/model' }, placed: ['sub_2'] }, async () => 'next');
+    }), next);
+    await runs.forceFlush();
+
+    const spans = of(runId);
+    const turns = spans.filter((s) => s.name === 'invoke_agent recovery');
+    expect(turns.map((s) => s.attributes['agent.turn.id']).sort()).toEqual(['sub_1', 'sub_2']);
+    const turnOf = (span: (typeof spans)[number]): string | undefined => {
+      const parent = spans.find((s) => s.spanContext().spanId === span.parentSpanContext?.spanId);
+      return !parent ? undefined : parent.name === 'invoke_agent recovery' ? (parent.attributes['agent.turn.id'] as string) : turnOf(parent);
+    };
+    const tools = spans.filter((s) => s.name === 'execute_tool lookup');
+    expect(tools).toHaveLength(1);
+    expect(turnOf(tools[0]!)).toBe('sub_1');
+    expect(spans.filter((s) => s.name === 'agent.step').map(turnOf).sort()).toEqual(['sub_1', 'sub_1', 'sub_2']);
+  }, 30_000);
+
   it('runs a tool call untraced when its step cannot be recorded', async () => {
     const world = processOf(await localWorld(), async () => {
       throw new Error('stream store unavailable');
@@ -185,6 +230,31 @@ describe('Agent Runs across drives and processes', () => {
     });
     await hook.drive(drive, driveContext(world, 'wrun_store_down'));
     expect(ran).toBe(true);
+  }, 30_000);
+
+  it('goes untraced in a drive whose checkpoint read failed, and runs its tool', async () => {
+    const runId = 'wrun_read_down';
+    const world = processOf(await localWorld(), undefined, async () => {
+      throw Object.assign(new Error('the stream store is down'), { status: 503 });
+    });
+    let ran = false;
+    await hook.drive(harness(async (ctx) => {
+      await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' }, placed: ['sub_1'] }, async () => 'ok');
+      expect(await ctx.effect('tool:call_1', { name: 'tool.lookup', replay: 'safe', input: {} }, async () => ((ran = true), 'found'))).toBe('found');
+    }), driveContext(world, runId));
+    await runs.forceFlush();
+    expect(ran).toBe(true);
+    // Not a fresh tree under the turn's span ids, which would orphan what another drive recorded.
+    expect(of(runId)).toEqual([]);
+  }, 30_000);
+
+  it('ends a drive whose checkpoint writes never answer, within the bound', async () => {
+    const world = processOf(await localWorld(), () => new Promise<never>(() => {}));
+    const started = Date.now();
+    await hook.drive(harness(async (ctx) => {
+      await ctx.effect('tool:call_1', { name: 'tool.lookup', replay: 'safe', input: {} }, async () => 'found');
+    }), driveContext(world, 'wrun_write_hangs'));
+    expect(Date.now() - started).toBeLessThan(3 * TRACE_IO_MS);
   }, 30_000);
 
   it("continues a turn from another process's checkpoint when the session comes back", async () => {

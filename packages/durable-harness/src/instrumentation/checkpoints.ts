@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { World } from '@workflow/world';
 import type { TraceCheckpointer, TraceSnapshot } from '@vercel/agent-runs';
-import { encodeLine, readJsonLines } from 'harness-world/streams';
+import { decodeLine, encodeLine } from 'harness-world/streams';
 
 /** One line of a turn's checkpoint stream: the turn's latest snapshot (null once it finished), or a drive that worked on it. */
 type Line = { readonly v: TraceSnapshot | null } | { readonly drive: number };
@@ -35,6 +35,13 @@ function parseKey(key: string): { runId: string; turnId: string } | undefined {
     return undefined;
   }
 }
+
+/**
+ * The longest one checkpoint read or write holds a drive. Past it, a read
+ * leaves the turn untraced in this drive, and a write leaves the turn's
+ * older checkpoint, which the turn continues from with the same span ids.
+ */
+export const TRACE_IO_MS = 5_000;
 
 export function checkpointStreamName(runId: string, turnId: string): string {
   return `${runId}_agent-runs_${createHash('sha256').update(turnId).digest('hex').slice(0, 24)}`;
@@ -91,7 +98,7 @@ export class TraceStreams {
     const drive = ++turn.drives;
     turn.storing++;
     try {
-      await this.world.streams.write(runId, turn.stream, new TextEncoder().encode(`${encodeLine({ drive } satisfies Line)}\n`));
+      await within(this.world.streams.write(runId, turn.stream, new TextEncoder().encode(`${encodeLine({ drive } satisfies Line)}\n`)), 'recording a drive');
     } finally {
       turn.storing--;
     }
@@ -105,13 +112,16 @@ export class TraceStreams {
     return turn.finished;
   }
 
-  /** Wait until every write so far is stored. */
+  /** Wait until every write so far is stored, for at most `TRACE_IO_MS`: a drive never waits longer at its end. */
   async flush(): Promise<void> {
-    for (;;) {
-      const writing = this.writing;
-      await writing;
-      if (writing === this.writing) return;
-    }
+    const stored = (async () => {
+      for (;;) {
+        const writing = this.writing;
+        await writing;
+        if (writing === this.writing) return;
+      }
+    })();
+    await within(stored, 'storing trace checkpoints').catch(this.onError);
   }
 
   private turn(key: string): Turn | undefined {
@@ -124,8 +134,14 @@ export class TraceStreams {
     return turn;
   }
 
+  /**
+   * The turn's stream, read once. A read the World could not answer (it
+   * failed for a while, or took too long) rejects: the turn goes untraced in
+   * this drive rather than start again from an empty tree. `forget` lets a
+   * later drive read again.
+   */
   private async load(turn: Turn): Promise<void> {
-    turn.loaded ??= readJsonLines(this.world, turn.runId, turn.stream).then(
+    turn.loaded ??= within(readLines(this.world, turn.runId, turn.stream), 'reading a trace checkpoint').then(
       (lines) => {
         let value: TraceSnapshot | undefined;
         let drives = 0;
@@ -141,7 +157,7 @@ export class TraceStreams {
       },
       (error: unknown) => {
         this.onError(error);
-        return { value: undefined, drives: 0, finished: false };
+        throw error;
       }
     );
     const { value, drives, finished } = await turn.loaded;
@@ -168,7 +184,7 @@ export class TraceStreams {
         next.pending = undefined;
         next.storing++;
         try {
-          await this.world.streams.write(next.runId, next.stream, new TextEncoder().encode(`${encodeLine({ v: pending.value } satisfies Line)}\n`));
+          await within(this.world.streams.write(next.runId, next.stream, new TextEncoder().encode(`${encodeLine({ v: pending.value } satisfies Line)}\n`)), 'storing a trace checkpoint');
         } catch (error) {
           this.onError(error);
         } finally {
@@ -177,4 +193,50 @@ export class TraceStreams {
       }
     });
   }
+}
+
+/** `work`, or a rejection once it took `TRACE_IO_MS` (it may still finish later). */
+function within<T>(work: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`agent-runs: ${what} took over ${TRACE_IO_MS} ms`)), TRACE_IO_MS);
+    timer.unref?.();
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A stream's lines. A stream the World has no such thing as, or one that
+ * expired, has none. A failure that says nothing about the stream (the
+ * World's server, throttling, the network) rejects, rather than read as an
+ * empty stream.
+ */
+async function readLines(world: World, runId: string, name: string): Promise<unknown[]> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let cursor: string | undefined;
+  for (;;) {
+    let page: Awaited<ReturnType<World['streams']['getChunks']>>;
+    try {
+      page = await world.streams.getChunks(runId, name, cursor ? { cursor } : {});
+    } catch (error) {
+      if (transient(error)) throw error;
+      return [];
+    }
+    for (const chunk of page.data) buffer += decoder.decode(chunk.data, { stream: true });
+    if (!page.hasMore || !page.cursor) break;
+    cursor = page.cursor;
+  }
+  buffer += decoder.decode();
+  return buffer.split('\n').filter(Boolean).map(decodeLine);
+}
+
+/** A World or network failure (its cause's, too): a 5xx, 425 or 429 answer, or a connection that failed. */
+function transient(error: unknown): boolean {
+  for (let e = error as { status?: unknown; code?: unknown; name?: unknown; cause?: unknown } | null | undefined, depth = 0; e && depth < 3; e = e.cause as typeof e, depth++) {
+    if (typeof e.status === 'number') return e.status >= 500 || e.status === 425 || e.status === 429;
+    if (e.name === 'AbortError' || e.name === 'TimeoutError' || e.code === 'TRANSPORT') return true;
+    if (typeof e.code === 'string' && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|UND_ERR_\w+)$/.test(e.code)) return true;
+  }
+  return false;
 }

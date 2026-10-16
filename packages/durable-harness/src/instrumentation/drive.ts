@@ -79,7 +79,9 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     if (!turn) turns.set(submission.id, (turn = { submission, steps: [], requests: 0 }));
     return turn;
   };
-  const initial = ctx.pending().find(isPrompt) ?? prompts().filter((s) => ctx.state().placed.has(s.id)).at(-1);
+  // The turn the drive goes on with: the last prompt placed, else (a session's first) the first one waiting. A prompt
+  // placed in this drive starts its own turn (`place`), so a follow-up queued behind a continued turn waits for it.
+  const initial = prompts().filter((s) => ctx.state().placed.has(s.id)).at(-1) ?? ctx.pending().find(isPrompt);
   if (initial) current = turnOf(initial);
 
   function input(submission: Submission): TurnInput {
@@ -259,23 +261,31 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     if (!step) return execute();
     const id = String(record(effect.input).model ?? 'unknown');
     const slash = id.indexOf('/');
-    const model = watch(await step.op.modelCall({ provider: slash > 0 ? id.slice(0, slash) : 'unknown', modelId: slash > 0 ? id.slice(slash + 1) : id }), step);
+    // Tracing never fails a model call: one it cannot record runs untraced, and its outcome stands as it was.
+    const model = await step.op.modelCall({ provider: slash > 0 ? id.slice(0, slash) : 'unknown', modelId: slash > 0 ? id.slice(slash + 1) : id }).then(
+      (op) => watch(op, step),
+      () => undefined
+    );
+    if (!model) return execute();
+    let value: T;
     try {
-      const value = await model.run(execute);
-      const output = record(value);
-      await model.complete({
+      value = await model.run(execute);
+    } catch (error) {
+      await model.fail(error).catch(() => {});
+      throw error;
+    }
+    const output = record(value);
+    await model
+      .complete({
         outcome: 'completed',
         result: {
           finishReason: typeof output.finishReason === 'string' ? output.finishReason : 'unknown',
           usage: {},
           content: typeof value === 'string' ? [{ type: 'text', text: value }] : undefined,
         },
-      });
-      return value;
-    } catch (error) {
-      await model.fail(error);
-      throw error;
-    }
+      })
+      .catch(() => {});
+    return value;
   }
 
   const tracing: DriveTracing = { modelCall: (o) => modelCall(o).catch(() => undefined) };
