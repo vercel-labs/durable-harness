@@ -20,7 +20,7 @@ export const HYBRID_MODEL = 'anthropic/claude-opus-5.5-fast';
  * installed one).
  * Recorded on fx turns and checkpoints, and part of `hybridFxConfigHash`.
  */
-export const LIBFX_VERSION = '0.0.13-dev.1432.g1df91f0b4ebf';
+export const LIBFX_VERSION = '0.0.14';
 
 /**
  * The same in every lane, and for both harnesses: it is part of the
