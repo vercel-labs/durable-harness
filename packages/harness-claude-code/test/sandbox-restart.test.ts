@@ -495,8 +495,7 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
         expect(proxy.drop(path)).toBeGreaterThan(0);
         setTimeout(release, 300);
         const state = await waitTurns(a.sessions, sessionId, 1);
-        (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
-    expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
+        expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
         expect(state.effectOrder.some((e) => e.name === UNAVAILABLE_STEP)).toBe(false);
         expect(refused(from, model)).toEqual([]);
         expect(a.logs.some((l) => l.message === 'relay link lost')).toBe(true);
@@ -534,8 +533,7 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
       expect(proxy.drop('/model')).toBeGreaterThan(0);
       setTimeout(release, 300);
       const state = await waitTurns(a.sessions, sessionId, 1);
-      (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
-    expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
+      expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
       expect(a.logs.some((l) => l.message.includes('the drive is rebuilt from the log'))).toBe(true);
       // The Read's response before the drop, and the recovery's after it: both charged in the log the caps read.
       expect(journalRecords<{ usd: number }>(state, SPEND_STREAM).length).toBeGreaterThanOrEqual(2);
@@ -562,7 +560,6 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
     for (const pid of pids) process.kill(pid, 'SIGKILL');
     release();
     const state = await waitTurns(a.sessions, sessionId, 1);
-    (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
     expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
     expect(refused(from, model)).toEqual([]);
     expect(a.failed).toEqual([]);
