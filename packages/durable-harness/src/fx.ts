@@ -52,6 +52,8 @@ import type { World } from '@workflow/world';
 import { fxAgentTools } from 'harness-world-hands/fx';
 import type { FxHostTool } from 'libfx';
 import { resolveEnvironment } from './environments.ts';
+
+export { agentRunsHooks, type FxAgentRunsHooks, type FxAgentRunsOptions } from './fx-agent-runs.ts';
 import type { Workspace } from './workspace.ts';
 import { getWorld } from './world.ts';
 

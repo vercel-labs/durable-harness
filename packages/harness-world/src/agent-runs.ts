@@ -56,11 +56,13 @@ export interface SessionTracing {
   /** A turn an earlier process started and has not finished, without starting one. */
   resume(turnId: string): Promise<TurnOperation | undefined>;
   /**
-   * A new step of `turn`, for a model call: numbered in this process, its
-   * attempt this process's number for the turn (recorded before it is
-   * used), so no step of another process, before or after, is the same one.
+   * A new step of `turn`, for a model call. Its attempt is a number for the
+   * turn recorded before it is used, so no step of another process, before
+   * or after, is the same one: this process's number, the step numbered in
+   * this process; or, with `at`, the number of the execution that runs it
+   * (an engine's run or resume of the turn), the step numbered in it.
    */
-  step(turn: TurnOperation, turnId: string): Promise<AttemptOperation>;
+  step(turn: TurnOperation, turnId: string, at?: { readonly execution: string; readonly stepIndex: number }): Promise<AttemptOperation>;
   /** Wait until every checkpoint this process wrote is stored. */
   flush(): Promise<void>;
 }

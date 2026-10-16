@@ -83,7 +83,7 @@ import { sandboxEnvBuilder } from 'pi-world/sandbox';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scriptedGateway, text as gatewayText, toolCall as gatewayToolCall, toolResults as gatewayResults } from '../../harness-opencode/test/scripted-gateway.ts';
 import { agentRuns } from '../src/instrumentation/otel.ts';
-import { fxTools } from '../src/fx.ts';
+import { agentRunsHooks, fxTools } from '../src/fx.ts';
 import { opencode } from '../src/opencode.ts';
 import { CodingTools, openWorldStorage, virtualEnv } from '../src/pi-durable.ts';
 import { createCodingTools, pi } from '../src/pi.ts';
@@ -539,12 +539,14 @@ async function fxRig(on: VirtualWorkspace | Platform): Promise<Rig> {
   // Both only read: `hold` waits for the drill, `vm_env` lists the VM's environments.
   const appTool = (name: 'hold' | 'vm_env') => ({ name, description: `The app's ${name}.`, inputSchema: { type: 'object', properties: {} }, idempotent: true, execute: async (_: unknown, c: { sessionId: string }) => (name === 'hold' ? app!.hold() : app!.vmEnv(c.sessionId)) });
   const host = hostname();
+  const hooks = agentRunsHooks({ world, name: 'fx' });
   const agent = createFxAgent({
     durability: fxWorld(world, { name: 'canary', livenessKnown: true, alive: () => true, holderInfo: () => ({ pid: process.pid, host }), pollMs: 50 }),
     apiKey: process.env.AI_GATEWAY_API_KEY!,
     model: 'test/model',
     fetch,
     modelCatalog: [],
+    hooks,
     tools: [
       ...(isPlatform(on) ? (fxAgentTools({ kind: 'sandbox' }, { world: () => world, acquire: atWorkspace(on.acquire()) }) as unknown as ReturnType<typeof fxTools>) : fxTools(on, { world })),
       appTool('hold'),
@@ -554,8 +556,8 @@ async function fxRig(on: VirtualWorkspace | Platform): Promise<Rig> {
   return {
     world,
     dataDir,
-    // libfx's own agent: its turns are libfx's, so durable-harness's instrumentation emits no Agent Run for them.
-    traces: false,
+    // libfx's own agent, traced from its semantic hooks (agentRunsHooks()).
+    traces: true,
     // Session A's files: on a virtual workspace its log, on the host the World's data directory; on a sandbox, its Drive.
     ...sandboxed(on, dataDir),
     run(who, steps, tools) {
@@ -567,6 +569,8 @@ async function fxRig(on: VirtualWorkspace | Platform): Promise<Rig> {
         await started;
         for await (const _ of turn);
         await turn.result;
+        // Its spans, before the search reads them.
+        await hooks.flush();
         return ran;
       })();
       return { started, done };

@@ -157,7 +157,7 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
           const identity = (turnId: string) => ({ conversationId: runId, runId, turnId });
           // Another process may have moved the session's turns on since this one last had it.
           streams.forget(runId);
-          /** Steps of its turns: this session's number for the turn, and its next step. */
+          /** Steps of its turns, per execution (or this session): its number for the turn, and its next step. */
           const steps = new Map<string, { drive: Promise<number>; next: number }>();
           return {
             async turn({ turnId, sequence, title }) {
@@ -177,14 +177,16 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
               streams.forget(runId, turnId);
               return run.resume({ identity: identity(turnId) });
             },
-            async step(turn, turnId) {
-              let numbered = steps.get(turnId);
+            async step(turn, turnId, at) {
+              const key = `${turnId}:${at?.execution ?? ''}`;
+              let numbered = steps.get(key);
               if (!numbered) {
                 const entry = (numbered = { drive: streams.nextDrive(runId, turnId), next: 0 });
-                steps.set(turnId, entry);
-                entry.drive.catch(() => steps.get(turnId) === entry && steps.delete(turnId));
+                steps.set(key, entry);
+                entry.drive.catch(() => steps.get(key) === entry && steps.delete(key));
+                if (steps.size > 10_000) steps.delete(steps.keys().next().value!);
               }
-              const stepIndex = numbered.next++;
+              const stepIndex = at?.stepIndex ?? numbered.next++;
               return turn.attempt({ stepIndex, attempt: await numbered.drive });
             },
             flush: () => streams.flush(),
