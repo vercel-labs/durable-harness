@@ -129,9 +129,11 @@ function clip(t: string, max: number): string {
  * `text` is the turn's text as the log kept it (the assistant text of its
  * finished steps, and the text before each tool call); a reader shows it in
  * place of what it showed of the turn so far (everything since the last
- * `idle`), and appends what streams after it.
+ * `idle`), and appends what streams after it. `parts` is the same text, one
+ * entry per kept step, for a reader that shows tool calls between them: a
+ * turn on screen with more text than `parts` has a cut-off reply last.
  */
-export function restartEvent(turn: OpenTurn): { type: 'restart'; text: string } {
-  const kept = turn.entries.flatMap((r) => (r.data?.type === 'message' && r.data.role === 'assistant' && r.data.text ? [r.data.text] : []));
-  return { type: 'restart', text: kept.join('\n\n') };
+export function restartEvent(turn: OpenTurn): { type: 'restart'; text: string; parts: string[] } {
+  const parts = turn.entries.flatMap((r) => (r.data?.type === 'message' && r.data.role === 'assistant' && r.data.text ? [r.data.text] : []));
+  return { type: 'restart', text: parts.join('\n\n'), parts };
 }

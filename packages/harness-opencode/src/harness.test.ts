@@ -333,7 +333,7 @@ describe('the OpenCode drive', () => {
     }
     expect(live.filter((e) => e.type === 'text' || e.type === 'restart')).toEqual([
       { type: 'text', delta: 'Paying acme now.' },
-      { type: 'restart', text: 'Paying acme now.' },
+      { type: 'restart', text: 'Paying acme now.', parts: ['Paying acme now.'] },
     ]);
     expect(b.errors).toEqual([]);
   });
@@ -408,7 +408,7 @@ describe('the OpenCode drive', () => {
       if (ev.type === 'idle' && live.some((e) => e.type === 'restart')) abort.abort();
     }
     const restart = live.findIndex((e) => e.type === 'restart');
-    expect(live[restart]).toEqual({ type: 'restart', text: 'Sending it.' });
+    expect(live[restart]).toEqual({ type: 'restart', text: 'Sending it.', parts: ['Sending it.'] });
     const text = (from: number, to: number) => live.slice(from, to).flatMap((e) => (e.type === 'text' ? [e.delta] : [])).join('');
     expect(text(0, restart)).toMatch(/^Sending it\..+/);
     // The stand-in's crashed host can still stream a few deltas as the next drive starts (a real crash writes nothing more).

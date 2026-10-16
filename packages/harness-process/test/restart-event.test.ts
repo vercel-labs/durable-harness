@@ -17,7 +17,7 @@ describe('restartEvent', () => {
         entry({ type: 'message', role: 'assistant', text: 'It has 3 lines.' }, 4),
       ],
     };
-    expect(restartEvent(turn)).toEqual({ type: 'restart', text: 'Checking the file.\n\nIt has 3 lines.' });
-    expect(restartEvent({ ...turn, entries: [] })).toEqual({ type: 'restart', text: '' });
+    expect(restartEvent(turn)).toEqual({ type: 'restart', text: 'Checking the file.\n\nIt has 3 lines.', parts: ['Checking the file.', 'It has 3 lines.'] });
+    expect(restartEvent({ ...turn, entries: [] })).toEqual({ type: 'restart', text: '', parts: [] });
   });
 });
