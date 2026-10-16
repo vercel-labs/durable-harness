@@ -1,8 +1,8 @@
 /**
  * libfx's kernel tools as the model sees them: names and input schemas
  * vendored from fx (https://github.com/vercel-labs/fx, Apache-2.0),
- * `src/builtins/tools.zig` at commit 1df91f0b4ebf8f00b16fc6453d33059397460b9f
- * (the commit libfx 0.0.13-dev.1432.g1df91f0b4ebf is built from), rendered the
+ * `src/builtins/tools.zig` at commit 1a070af32cdfaf8cd0da6de3dc7f053302828b17
+ * (tag v0.0.14, the commit libfx 0.0.14 is built from), rendered the
  * way `src/core/tooling/model_tool_schema.zig` writes a builtin's schema (keys
  * in its order: type, enum, minLength, maxLength, minimum, maximum,
  * description). `shell` is the process-only request union
@@ -20,8 +20,8 @@
 export const FX_SOURCE = Object.freeze({
   repository: 'vercel-labs/fx',
   path: 'src/builtins/tools.zig',
-  commit: '1df91f0b4ebf8f00b16fc6453d33059397460b9f',
-  libfx: '0.0.13-dev.1432.g1df91f0b4ebf',
+  commit: '1a070af32cdfaf8cd0da6de3dc7f053302828b17',
+  libfx: '0.0.14',
 });
 
 /** The tools, in the order fx advertises them (`advertisement_order` in tools.zig). */

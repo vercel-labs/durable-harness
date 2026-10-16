@@ -12,7 +12,7 @@ durable by itself: `createFxAgent` keeps each session in a World and
 continues it after a crash. No adapter:
 
 ```ts
-import { createFxAgent } from 'libfx'; // libfx@0.0.13-dev.1432.g1df91f0b4ebf
+import { createFxAgent } from 'libfx'; // libfx 0.0.14 or later
 
 export const agent = createFxAgent({ model: 'anthropic/claude-opus-5.5-fast', tools });
 

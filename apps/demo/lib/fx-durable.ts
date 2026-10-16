@@ -112,7 +112,7 @@ export function fxAgent(): Promise<FxAgent> {
           const identity = fxPromptTraceIdentity(event.message);
           if (identity) fxTraceInvocations.getStore()?.turns.set(identity.sessionId, identity);
         }
-        if ('sessionId' in event) {
+        if ('sessionId' in event && event.sessionId) {
           const state = fxTraceInvocations.getStore()?.traces.get(event.sessionId);
           if (state && (event.type === 'session.deadline' || event.type === 'session.fenced')) state.outcome = 'running';
           if (state && event.type === 'session.error') state.outcome = 'failed';
@@ -361,6 +361,7 @@ export async function workspaceTools() {
   }));
   const unsafe = (name: UnsafeToolName) => ({
     ...descriptor(name),
+    idempotent: false,
     writes: true,
     async execute(input: Record<string, unknown>, ctx: FxToolContext) {
       return toolStep(ctx.sessionId, ctx, name, input, async () => {

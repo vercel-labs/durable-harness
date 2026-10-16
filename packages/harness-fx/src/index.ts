@@ -242,8 +242,19 @@ const isDurableAgent = (value: unknown) => !!value && typeof value === 'object' 
  * not return a promise, or whose result looks like that agent, is a TypeError.
  */
 export async function createEngine(factory: CreateFxEngine, options: FxEngineOptions): Promise<FxAgent> {
-  const made: unknown = factory(options);
-  if (isDurableAgent(made)) throw new TypeError(`fx: ${DURABLE_AGENT}`);
+  let made: unknown;
+  try {
+    made = factory(options);
+  } catch (err) {
+    // Only a durable agent has a name to collide on (libfx 0.0.14: one configuration per name on a store, in a process).
+    if ((err as { code?: unknown } | null)?.code === 'FX_AGENT_NAME_IN_USE') throw new TypeError(`fx: ${DURABLE_AGENT}`);
+    throw err;
+  }
+  if (isDurableAgent(made)) {
+    // Closing it lets its name go at once, so the next agent of that name is not refused.
+    void (made as { close?: () => Promise<void> }).close?.().catch(() => {});
+    throw new TypeError(`fx: ${DURABLE_AGENT}`);
+  }
   if (!made || typeof (made as { then?: unknown }).then !== 'function') {
     throw new TypeError("fx: the engine factory must return a promise of an engine, as libfx's createFxEngine does");
   }

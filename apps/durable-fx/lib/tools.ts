@@ -1,7 +1,7 @@
 import { appendFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { FxTool } from 'libfx';
+import type { FxAgentTool } from 'libfx';
 
 /** Where `charge` records its charges: a stand-in for a payment API. */
 export const LEDGER = process.env.LEDGER_FILE ?? join(tmpdir(), 'durable-fx-ledger.txt');
@@ -19,7 +19,7 @@ const pause = (ms: number, signal?: AbortSignal) =>
  *   it again by itself. After a crash the model hears that it may have partly
  *   run. A real tool passes `executionId` to its API as the idempotency key.
  */
-export const tools: FxTool[] = [
+export const tools: FxAgentTool[] = [
   {
     name: 'wait',
     description: 'Waits the given number of seconds.',
@@ -34,6 +34,7 @@ export const tools: FxTool[] = [
     name: 'charge',
     description: 'Charges the user an amount in dollars, with a memo.',
     inputSchema: { type: 'object', properties: { amount: { type: 'number' }, memo: { type: 'string' } }, required: ['amount', 'memo'] },
+    idempotent: false,
     async execute({ amount, memo }: { amount: number; memo: string }, { executionId, signal }) {
       await appendFile(LEDGER, `${executionId} $${amount.toFixed(2)} ${memo}\n`);
       await pause(3000, signal); // the payment provider confirming
