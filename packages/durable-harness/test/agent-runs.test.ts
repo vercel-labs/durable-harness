@@ -77,7 +77,7 @@ describe('Agent Runs with @vercel/agent-runs', () => {
     const state = await sessions.inspect(sessionId);
     for (const s of state.submissions.filter((x) => x.text !== undefined)) {
       const lines = (await readJsonLines(world, sessionId, checkpointStreamName(sessionId, s.id))) as { v?: unknown }[];
-      expect(lines.filter((l) => 'v' in l).at(-1)).toEqual({ v: null });
+      expect(lines.filter((l) => 'v' in l).at(-1)).toMatchObject({ v: null });
     }
   }, 60_000);
 

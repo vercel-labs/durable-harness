@@ -40,6 +40,30 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const post = { method: 'POST', path: '/v1/messages' };
 
 describe('ModelSteps', () => {
+  it('waits for completed request tracing before closing the drive', async () => {
+    const { ctx } = stubCtx(stateWith());
+    let release!: () => void;
+    const saved = new Promise<void>(resolve => { release = resolve; });
+    const tracing = { modelCall: async () => ({ model: { complete: () => saved }, attempt: { attributes() {} } }) } as unknown as DriveContext['tracing'];
+    const steps = new ModelSteps({ ...ctx, tracing });
+    steps.request(post)!({ status: 200 });
+    let closed = false;
+    const closing = steps.close().then(() => { closed = true; });
+    await tick();
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  it('does not let an unfinished trace keep a drive past its deadline', async () => {
+    const { ctx } = stubCtx(stateWith());
+    const tracing = { modelCall: async () => ({ model: { complete: () => new Promise(() => {}) }, attempt: { attributes() {} } }) } as unknown as DriveContext['tracing'];
+    const steps = new ModelSteps({ ...ctx, tracing, deadline: Date.now() + 10 });
+    steps.request(post)!({ status: 200 });
+    await steps.close();
+  }, 1000);
+
   it('counts POSTs as model requests, not token counts or reads', () => {
     expect(isModelRequest(post)).toBe(true);
     expect(isModelRequest({ method: 'POST', path: '/v1/messages/count_tokens' })).toBe(false);

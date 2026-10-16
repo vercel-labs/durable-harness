@@ -520,9 +520,6 @@ importers:
       '@opentelemetry/api':
         specifier: 1.9.0
         version: 1.9.0
-      '@vercel/agent-runs':
-        specifier: 0.0.1
-        version: 0.0.1(@opentelemetry/api@1.9.0)
       '@vercel/oidc':
         specifier: 3.2.0
         version: 3.2.0
@@ -593,6 +590,9 @@ importers:
       '@opentelemetry/sdk-trace-base':
         specifier: 2.2.0
         version: 2.2.0(@opentelemetry/api@1.9.0)
+      '@vercel/agent-runs':
+        specifier: 0.0.1
+        version: 0.0.1(@opentelemetry/api@1.9.0)
       effect:
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112
@@ -632,6 +632,12 @@ importers:
       pi-world:
         specifier: workspace:*
         version: link:../pi-world
+      rollup:
+        specifier: 4.63.5
+        version: 4.63.5
+      rollup-plugin-dts:
+        specifier: 6.2.3
+        version: 6.2.3(rollup@4.63.5)(typescript@5.9.3)
       tsup:
         specifier: 8.5.1
         version: 8.5.1(@swc/core@1.15.3(@swc/helpers@0.5.23))(postcss@8.5.28)(supports-color@10.2.2)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.0)
@@ -6129,6 +6135,13 @@ packages:
     resolution: {integrity: sha512-qpSwIyz0jHQq5qXBTNxFmE6664rJ7O+4TvPFOiOaBSrz8IOHc1koKKSqTM2H6u1UG1+TveuC6vaDHKXFOvb1Kw==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
+
+  rollup-plugin-dts@6.2.3:
+    resolution: {integrity: sha512-UgnEsfciXSPpASuOelix7m4DrmyQgiaWBnvI0TM4GxuDh5FkqW8E5hu57bCxXB90VvR1WNfLV80yEDN18UogSA==}
+    engines: {node: '>=16'}
+    peerDependencies:
+      rollup: ^3.29.4 || ^4
+      typescript: ^4.5 || ^5.0
 
   rollup@4.63.5:
     resolution: {integrity: sha512-KRWwmNLlPw5M7HcdYfm15oBv9n9LPtjzpzCIxS/phwqvPyxHSoKX6Y2YU3pxSPfy0CLquVgsx/j/hBi6OvH1Nw==}
@@ -13638,6 +13651,14 @@ snapshots:
       '@rolldown/binding-openharmony-arm64': 1.2.11
       '@rolldown/binding-win32-arm64-msvc': 1.2.11
       '@rolldown/binding-win32-x64-msvc': 1.2.11
+
+  rollup-plugin-dts@6.2.3(rollup@4.63.5)(typescript@5.9.3):
+    dependencies:
+      magic-string: 0.30.21
+      rollup: 4.63.5
+      typescript: 5.9.3
+    optionalDependencies:
+      '@babel/code-frame': 7.29.7
 
   rollup@4.63.5:
     dependencies:

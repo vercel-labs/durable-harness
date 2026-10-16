@@ -8,6 +8,7 @@ import type { DriveContext, EffectRecord, Harness, SessionState, Submission } fr
 import { agentRunsHook } from 'harness-world/agent-runs';
 import { Parked } from 'harness-world/errors';
 import { readJsonLines } from 'harness-world/streams';
+import { gatewayModelOptions } from '../../harness-process/src/agent-runs.ts';
 import { afterAll, describe, expect, it } from 'vitest';
 import { checkpointStreamName } from '../src/instrumentation/checkpoints.ts';
 import { agentRuns } from '../src/instrumentation/otel.ts';
@@ -29,12 +30,12 @@ async function localWorld(): Promise<LocalWorld> {
 }
 
 /** The same World as another process sees it: its own Agent Runs state. With `write`, its stream writes go there. */
-function processOf(world: World, write?: World['streams']['write']): World {
+function processOf(world: World, write?: World['streams']['write'], overrides: Partial<World['streams']> = {}): World {
   const bound = (target: object, key: string | symbol) => {
     const value = Reflect.get(target, key);
     return typeof value === 'function' ? value.bind(target) : value;
   };
-  const streams = new Proxy(world.streams, { get: (target, key) => (key === 'write' && write ? write : bound(target, key)) });
+  const streams = new Proxy(world.streams, { get: (target, key) => key in overrides ? Reflect.get(overrides, key) : key === 'write' && write ? write : bound(target, key) });
   return new Proxy(world, { get: (target, key) => (key === 'streams' ? streams : bound(target, key)) });
 }
 
@@ -62,6 +63,77 @@ const harness = (drive: (ctx: DriveContext) => Promise<void>): Harness => ({ nam
 const of = (runId: string) => exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === runId);
 
 describe('Agent Runs across drives and processes', () => {
+  it('records public tool definitions without persisting provider credentials', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_tool_definitions';
+    const session = hook.session({ world, runId, agentName: 'public-tools', audience: 'public' });
+    const turn = (await session.turn({ turnId: 'turn', sequence: 0 }))!;
+    const step = await session.step(turn, 'turn');
+    const options = gatewayModelOptions({ path: '/v1/responses', body: {
+      model: 'test/model', input: 'Look up the record',
+      tools: [{ type: 'mcp', name: 'remote_lookup', authorization: 'test-only-credential', headers: { 'x-api-key': 'test-only-credential' }, parameters: { type: 'object' } }],
+    } });
+    const model = await step.modelCall(options);
+    await session.flush();
+    const lines = await readJsonLines(world, runId, checkpointStreamName(runId, 'turn'));
+    expect(JSON.stringify(lines)).toContain('remote_lookup');
+    expect(JSON.stringify(lines)).not.toContain('test-only-credential');
+    await model.complete({ outcome: 'completed', result: { usage: {}, finishReason: 'stop', content: [{ type: 'text', text: 'done' }] } });
+    await step.complete();
+    await turn.complete({ outcome: 'completed' });
+    await session.flush();
+    await runs.forceFlush();
+    const recorded = of(runId).find(span => span.attributes['gen_ai.operation.name'] === 'chat')!;
+    expect(recorded.attributes['gen_ai.tool.definitions']).toContain('remote_lookup');
+    expect(JSON.stringify(recorded.attributes)).not.toContain('test-only-credential');
+  });
+
+  it('runs untraced without overwriting a checkpoint when its read fails', async () => {
+    const original = await localWorld();
+    let writes = 0;
+    const world = processOf(original, async () => { writes++; }, { getInfo: async () => { throw new Error('checkpoint unavailable'); } });
+    let ran = false;
+    await hook.drive(harness(async ctx => {
+      expect(await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => { ran = true; return 'model reply'; })).toBe('model reply');
+    }), driveContext(world, 'wrun_read_failed'));
+    expect(ran).toBe(true);
+    expect(writes).toBe(0);
+  });
+
+  it('lets a drive finish when its checkpoint read never answers', async () => {
+    const world = processOf(await localWorld(), undefined, { getInfo: () => new Promise(() => {}) });
+    let ran = false;
+    const ctx = { ...driveContext(world, 'wrun_read_stuck'), deadline: Date.now() + 10 };
+    await hook.drive(harness(async ctx => {
+      await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => { ran = true; return 'model reply'; });
+    }), ctx);
+    expect(ran).toBe(true);
+  }, 1000);
+
+  it('continues the placed turn before switching to a queued follow-up', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_followup';
+    const session = hook.session({ world, runId, agentName: 'recovery', audience: 'public' });
+    await session.turn({ turnId: 'sub_1', sequence: 0, title: 'hello' });
+    await session.flush();
+    const ctx = driveContext(processOf(world), runId);
+    const followUp: Submission = { id: 'sub_2', kind: 'followUp', text: 'next prompt', receivedAt: new Date() };
+    ctx.state().submissions.push(followUp);
+    await hook.drive(harness(async ctx => {
+      await ctx.effect('model:continued', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => 'continued first answer');
+      await ctx.effect('model:next', { name: 'model', replay: 'safe', input: { model: 'test/model' }, placed: ['sub_2'] }, async () => 'follow-up answer');
+    }), { ...ctx, pending: () => [followUp] });
+    await runs.forceFlush();
+    const turns = of(runId).filter(span => span.name === 'invoke_agent recovery');
+    expect(turns).toHaveLength(2);
+    const first = turns.find(span => span.attributes['agent.turn.id'] === 'sub_1')!;
+    const second = turns.find(span => span.attributes['agent.turn.id'] === 'sub_2')!;
+    expect(first.attributes['gen_ai.output.messages']).toContain('continued first answer');
+    expect(second.attributes['gen_ai.output.messages']).toContain('follow-up answer');
+    expect(first.attributes['agent.turn.outcome']).toBe('completed');
+    expect(second.attributes['agent.turn.outcome']).toBe('completed');
+  });
+
   it.each([
     { audience: 'private' as const, freshProcess: false },
     { audience: 'private' as const, freshProcess: true },

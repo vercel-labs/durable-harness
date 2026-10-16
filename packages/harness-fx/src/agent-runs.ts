@@ -1,5 +1,6 @@
 import type { Attributes } from '@vercel/agent-runs';
 import type { ContentPart, ModelOptions, ModelResult } from 'harness-world/agent-runs';
+import { modelMessages, modelTools } from 'harness-world/agent-runs';
 
 /**
  * fx's model calls as Agent Runs records them: libfx's kernel sends AI
@@ -17,9 +18,9 @@ export function fxModelOptions(model: string | undefined, request: unknown): Mod
   return {
     provider: 'gateway',
     modelId: model ?? 'unknown',
-    messages: prompt.filter((m) => m.role !== 'system'),
+    messages: modelMessages(prompt.filter((m) => m.role !== 'system')),
     ...(instructions.length ? { instructions: instructions.join('\n\n') } : {}),
-    ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
+    ...(Array.isArray(body.tools) ? { tools: modelTools(body.tools) } : {}),
   };
 }
 

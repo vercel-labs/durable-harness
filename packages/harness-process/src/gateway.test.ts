@@ -1,7 +1,7 @@
-import { createServer, type IncomingHttpHeaders } from 'node:http';
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { FIRST_OUTPUT, gatewayCredential, gatewayProxy, gatewayToken } from './gateway.ts';
+import { FIRST_OUTPUT, gatewayCredential, gatewayProxy, gatewayToken, MODEL_BODY_MAX_BYTES } from './gateway.ts';
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -32,6 +32,52 @@ const KEY = 'child-key';
 const keyed = { authorization: `Bearer ${KEY}` };
 
 describe('gatewayProxy', () => {
+  it.each([
+    { captureRequest: false, path: '/v1/messages' },
+    { captureRequest: true, path: '/v1/messages/count_tokens' },
+  ])('streams request bytes before the body ends when no trace payload is needed: $path ($captureRequest)', async ({ captureRequest, path }) => {
+    let arrived!: () => void;
+    const first = new Promise<void>(resolve => { arrived = resolve; });
+    let received = '';
+    const server = createServer((req, res) => {
+      req.on('data', chunk => { received += chunk; arrived(); });
+      req.on('end', () => res.end('ok'));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    closers.push(() => { server.closeAllConnections(); return new Promise(resolve => server.close(() => resolve())); });
+    const tracked: unknown[] = [];
+    const proxy = await gatewayProxy({ target: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, credential: async () => 'test', token: KEY, captureRequest, track: info => { tracked.push(info); } });
+    closers.push(proxy.close);
+    const outgoing = httpRequest(`${proxy.url}${path}`, { method: 'POST', headers: keyed });
+    const response = new Promise<string>((resolve, reject) => {
+      outgoing.on('error', reject);
+      outgoing.on('response', res => { let text = ''; res.on('data', chunk => { text += chunk; }); res.on('end', () => resolve(text)); });
+    });
+    response.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      outgoing.write('first');
+      await Promise.race([first, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('request was buffered')), 1000); })]);
+      outgoing.end('second');
+      expect(await response).toBe('ok');
+      expect(received).toBe('firstsecond');
+      expect(tracked).toEqual([{ method: 'POST', path }]);
+    } finally { clearTimeout(timer); outgoing.destroy(); }
+  });
+
+  it('forwards a model request beyond the capture limit without retaining or parsing its body', async () => {
+    const target = await upstream(['ok']);
+    const tracked: { body?: unknown }[] = [];
+    const proxy = await gatewayProxy({ target: target.url, credential: async () => 'test', token: KEY, captureRequest: true, track: info => { tracked.push(info); } });
+    closers.push(proxy.close);
+    const body = JSON.stringify({ model: 'test', messages: 'x'.repeat(MODEL_BODY_MAX_BYTES + 100) });
+    const response = await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: keyed, body });
+    expect(await response.text()).toBe('ok');
+    expect(target.seen[0]!.body).toBe(body);
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]!.body).toBeUndefined();
+  });
+
   it('forwards with a fresh credential per request, replacing the placeholder, and streams the reply', async () => {
     const target = await upstream();
     let n = 0;
@@ -187,6 +233,7 @@ describe('gatewayProxy', () => {
       target: target.url,
       credential: async () => 'secret-upstream-key',
       token: KEY,
+      captureRequest: true,
       track: (request) => (tracked.push(request), Object.assign(finish, { capture: true })),
     });
     closers.push(proxy.close);
@@ -222,6 +269,7 @@ describe('gatewayProxy', () => {
       target: target.url,
       credential: async () => 'upstream-secret',
       token: 'child-secret',
+      captureRequest: true,
       track: request => { starts.push(request); },
     });
     closers.push(proxy.close);
