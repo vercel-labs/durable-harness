@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ROOT_CONTEXT, context, type Context, type ContextManager } from '@opentelemetry/api';
 import type { BasicTracerProvider, SpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { AgentSpanIdGenerator, createAgentRun, otelTelemetry, type AgentRun, type CaptureDecision, type TraceErrorHandler } from '@vercel/agent-runs';
+import type { AgentRun, CaptureDecision, TraceErrorHandler } from '@vercel/agent-runs';
 import type { World } from '@workflow/world';
 import { AGENT_RUNS, type AgentRunsHook, type SessionTracing, type TraceAudience } from 'harness-world/agent-runs';
 import { VERSION } from 'harness-world/names';
@@ -33,7 +33,7 @@ export interface AgentRunsOptions {
 export interface AgentRuns {
   /** Start tracing this process's sessions. Call once per process, from the host's instrumentation hook. */
   register(): void;
-  /** Export what has ended and store every checkpoint. */
+  /** Export ended spans and settle bounded, best-effort checkpoint writes. */
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -42,24 +42,28 @@ const CONTENT: CaptureDecision = { emit: true, recordInputs: true, recordOutputs
 const METADATA: CaptureDecision = { emit: true, recordInputs: false, recordOutputs: false };
 const defaultCapture = (audience: TraceAudience) => (audience === 'public' ? CONTENT : METADATA);
 
-/** OpenTelemetry's SDK at the versions this module is tested with: optional peer dependencies only it loads. */
+/** Optional tracing peers, loaded only by this entrypoint. */
 const OTEL_SDK_PINS = {
   '@opentelemetry/sdk-trace-base': '2.2.0',
   '@opentelemetry/resources': '2.2.0',
   '@opentelemetry/otlp-transformer': '0.208.0',
+  '@vercel/agent-runs': '0.0.1',
 } as const;
 const OTEL_SDK_INSTALL = `pnpm add ${Object.entries(OTEL_SDK_PINS).map(([name, version]) => `${name}@${version}`).join(' ')}`;
 
-const sdk = await Promise.all([import('@opentelemetry/sdk-trace-base'), import('@opentelemetry/resources'), import('@opentelemetry/otlp-transformer')]).then(
-  ([traceBase, resources, transformer]) => ({
+const sdk = await Promise.all([import('@opentelemetry/sdk-trace-base'), import('@opentelemetry/resources'), import('@opentelemetry/otlp-transformer'), import('@vercel/agent-runs')]).then(
+  ([traceBase, resources, transformer, agentRuns]) => ({
     BasicTracerProvider: traceBase.BasicTracerProvider,
     resourceFromAttributes: resources.resourceFromAttributes,
     JsonTraceSerializer: transformer.JsonTraceSerializer,
+    AgentSpanIdGenerator: agentRuns.AgentSpanIdGenerator,
+    createAgentRun: agentRuns.createAgentRun,
+    otelTelemetry: agentRuns.otelTelemetry,
   }),
   (error: unknown) => {
     const missing = missingPackage(error);
     if (!missing) throw error;
-    return { missing: new Error(`durable-harness/instrumentation/otel: agentRuns() records spans with OpenTelemetry's SDK, optional peer dependencies of durable-harness, and ${missing} is not installed. Install them: ${OTEL_SDK_INSTALL}`, { cause: error }) };
+    return { missing: new Error(`durable-harness/instrumentation/otel: agentRuns() needs its optional tracing peers, and ${missing} is not installed. Install them: ${OTEL_SDK_INSTALL}`, { cause: error }) };
   }
 );
 function missingPackage(error: unknown): string | undefined {
@@ -104,13 +108,17 @@ class AsyncContextManager implements ContextManager {
  * stays one turn: its checkpoint is kept with the session. Declaring it does
  * nothing; `register()` starts it. Its tracer provider is its own, so the
  * app's OpenTelemetry setup, if any, is left as it is.
+ * Tracing requires Node.js 24 and its optional peers; other entrypoints support Node.js 22.
  */
 export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   if ('missing' in sdk) throw sdk.missing;
-  const { BasicTracerProvider, resourceFromAttributes, JsonTraceSerializer } = sdk;
-  const onError: TraceErrorHandler =
-    options.onError ??
-    ((error, at) => console.warn(`[durable-harness] Agent Runs: ${at.phase} failed`, error instanceof Error ? error.message : error));
+  const { BasicTracerProvider, resourceFromAttributes, JsonTraceSerializer, AgentSpanIdGenerator, createAgentRun, otelTelemetry } = sdk;
+  const onError: TraceErrorHandler = (error, at) => {
+    try {
+      if (options.onError) void Promise.resolve(options.onError(error, at)).catch(() => {});
+      else console.warn(`[durable-harness] Agent Runs: ${at.phase} failed`, error instanceof Error ? error.message : error);
+    } catch { /* Diagnostics must not fail agent work. */ }
+  };
   const capture = (audience: TraceAudience) => {
     try {
       return options.capture?.(audience) ?? defaultCapture(audience);
@@ -122,7 +130,7 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   const audience = options.audience ?? 'unknown';
   let provider: BasicTracerProvider | undefined;
   const worlds = new WeakMap<World, { run: AgentRun; streams: TraceStreams }>();
-  const live = new Set<TraceStreams>();
+  const live = new Set<WeakRef<TraceStreams>>();
 
   return {
     register() {
@@ -142,11 +150,13 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
           const streams = new TraceStreams(world, (error) => onError(error, { phase: 'checkpoint' }));
           traced = { streams, run: createAgentRun({ telemetry, checkpointer: streams.checkpointer, onError }) };
           worlds.set(world, traced);
-          live.add(streams);
+          live.add(new WeakRef(streams));
         }
         return traced;
       };
       const hook: AgentRunsHook = {
+        capture: given => capture(given ?? audience),
+        onError,
         drive: (harness, ctx) => {
           const { run, streams } = forWorld(ctx.world);
           return traceDrive({ run, streams, audience, capture, version: VERSION }, harness, ctx);
@@ -163,6 +173,7 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
             async turn({ turnId, sequence, title }) {
               streams.forget(runId, turnId);
               if (await streams.finished(runId, turnId)) return undefined;
+              sequence ??= (await run.resume({ identity: identity(turnId) })) ? 0 : await streams.nextSequence(runId);
               return run.turn({
                 identity: identity(turnId),
                 agentName,
@@ -173,9 +184,13 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
                 attributes: { 'agent.channel.audience': given ?? audience, ...(title && decision.recordInputs ? { 'agent.session.title': title.slice(0, 160) } : {}) },
               });
             },
-            resume: (turnId) => {
+            async resume(turnId) {
               streams.forget(runId, turnId);
-              return run.resume({ identity: identity(turnId) });
+              if (!(await run.resume({ identity: identity(turnId) }))) return undefined;
+              // resume() restores the saved permissions; turn() narrows the whole tree to today's decision.
+              const turn = await run.turn({ identity: identity(turnId), sequence: 0, capture: decision });
+              turn.attributes({ 'agent.channel.audience': given ?? audience });
+              return turn;
             },
             async step(turn, turnId, at) {
               const key = `${turnId}:${at?.execution ?? ''}`;
@@ -189,14 +204,18 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
               const stepIndex = at?.stepIndex ?? numbered.next++;
               return turn.attempt({ stepIndex, attempt: await numbered.drive });
             },
-            flush: () => streams.flush(),
+            flush: () => streams.flush(runId),
           };
         },
       };
       (globalThis as { [AGENT_RUNS]?: AgentRunsHook })[AGENT_RUNS] = hook;
     },
     async forceFlush() {
-      await Promise.all([...live].map((streams) => streams.flush()));
+      await Promise.all([...live].map((reference) => {
+        const streams = reference.deref();
+        if (streams) return streams.flush();
+        live.delete(reference);
+      }));
       await provider?.forceFlush();
     },
     async shutdown() {

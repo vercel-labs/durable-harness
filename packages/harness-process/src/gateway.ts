@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
-import { ResponseCapture } from './agent-runs.ts';
+import { isModelRequest, ResponseCapture } from './agent-runs.ts';
 import type { GatewayErrorCode, GatewayHandler } from './environment.ts';
 
 /**
@@ -49,10 +49,11 @@ export interface GatewayProxyOptions {
    * forwarded. The function it returns, if any, is called once that request
    * is over: its response ended, failed, or its connection closed (the child
    * died, the proxy closed). `ModelSteps.request` is one: the drive's model
-   * steps. With `track`, the proxy reads a request's body before forwarding
-   * it, so `track` sees what was asked.
+    * steps.
    */
   track?: (request: TrackedRequest) => TrackEnd | void;
+  /** Read a bounded model request for tracing. Otherwise requests stream straight through. Default false. */
+  captureRequest?: boolean;
   /**
    * Forward only requests that carry this value (`authorization: Bearer
    * <token>` or `x-api-key: <token>`), or one of these values; anything
@@ -134,12 +135,12 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
       return void res.end('harness-world-process gateway proxy: the request does not carry the key this proxy gave its child');
     }
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
-    // Tracked: the body is read first, so the tracker sees the request.
-    const body = options.track && hasBody ? await readAll(req) : undefined;
+    const request = { method: req.method ?? 'GET', path: req.url ?? '/' };
+    const captured = options.track && options.captureRequest && isModelRequest(request) ? await readRequest(req) : undefined;
+    const body = captured?.body;
     const model = req.headers['ai-language-model-id'];
     const ended = options.track?.({
-      method: req.method ?? 'GET',
-      path: req.url ?? '/',
+      ...request,
       ...(typeof model === 'string' && model ? { model } : {}),
       ...(body?.length ? { body: parseBody(body) } : {}),
     });
@@ -165,7 +166,7 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
     const upstream = await fetch(`${target}${req.url ?? '/'}`, {
       method: req.method ?? 'GET',
       headers,
-      ...(body ? { body } : hasBody ? { body: Readable.toWeb(req) as ReadableStream, duplex: 'half' } : {}),
+      ...(body ? { body } : hasBody ? { body: (captured?.stream ?? Readable.toWeb(req)) as ReadableStream, duplex: 'half' } : {}),
       signal: abort.signal,
     } as RequestInit);
     const out: Record<string, string> = {};
@@ -970,12 +971,14 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
       }
       if (body.length > MODEL_BODY_MAX_BYTES) throw refuse('bad_request', 'the body is over 4 MiB');
       let forward: string | undefined;
+      let trackedBody: Record<string, unknown> | undefined;
       let model: string | undefined;
       let outputLimit: number | undefined;
       if (route.body) {
         const parsed = parseStrictJson(body);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw refuse('bad_request', 'the body must be a JSON object');
         const out = route.body(parsed as Record<string, unknown>, check);
+        trackedBody = out;
         model = typeof out.model === 'string' ? out.model : undefined;
         const limitOf = out.max_tokens ?? out.max_output_tokens;
         outputLimit = typeof limitOf === 'number' ? limitOf : undefined;
@@ -1009,7 +1012,7 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
 
       inflight++;
       const info = { method, path: route.path, ...(model ? { model } : {}) };
-      const end = options.track?.({ ...info, ...(forward !== undefined ? { body: JSON.parse(forward) as unknown } : {}) }) || undefined;
+      const end = options.track?.({ ...info, ...(trackedBody ? { body: trackedBody } : {}) }) || undefined;
       const capture = end?.capture ? new ResponseCapture() : undefined;
       const billed = !!route.body && !route.free;
       const requestBytes = forward === undefined ? 0 : Buffer.byteLength(forward);
@@ -1123,10 +1126,27 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
   };
 }
 
-async function readAll(req: IncomingMessage): Promise<Buffer> {
+async function readRequest(req: IncomingMessage): Promise<{ body?: Buffer; stream?: ReturnType<typeof Readable.toWeb> }> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks);
+  const iterator = req[Symbol.asyncIterator]();
+  let size = 0;
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) return { body: Buffer.concat(chunks, size) };
+    const chunk = next.value as Buffer;
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size > MODEL_BODY_MAX_BYTES) {
+      // Reuse the prefix and the same iterator: breaking a for-await would close the request.
+      const stream = Readable.from((async function* () {
+        try {
+          yield* chunks;
+          for (;;) { const next = await iterator.next(); if (next.done) return; yield next.value; }
+        } finally { await iterator.return?.(); }
+      })());
+      return { stream: Readable.toWeb(stream) };
+    }
+  }
 }
 
 function parseBody(body: Buffer): unknown {

@@ -21,6 +21,7 @@ import {
   wrapLanguageModel,
 } from 'ai';
 import { modelContent } from '@vercel/agent-runs/ai-sdk';
+import { modelMessages, modelTools } from 'harness-world/agent-runs';
 import { type DriveContext, EffectFailure, Fatal, type Harness, type HostToolIO, type PromptDocs, promptDocsText, type ReplayPolicy, type SessionState, Yield } from 'durable-harness';
 
 /**
@@ -225,12 +226,18 @@ async function tracedGenerate(ctx: DriveContext, model: LanguageModelV4, params:
   const traced = await ctx.tracing?.modelCall({
     provider: model.provider,
     modelId: model.modelId,
-    messages: params.prompt.filter((m) => m.role !== 'system'),
+    messages: modelMessages(params.prompt.filter((m) => m.role !== 'system')),
     ...(system.length ? { instructions: system.join('\n\n') } : {}),
-    ...(params.tools ? { tools: params.tools } : {}),
-  });
+    ...(params.tools ? { tools: modelTools(params.tools) } : {}),
+  }).catch(() => undefined);
+  let result: Awaited<ReturnType<typeof generate>>;
   try {
-    const result = await generate(ctx, model, params, attempts, key);
+    result = await generate(ctx, model, params, attempts, key);
+  } catch (error) {
+    await traced?.model.fail(error).catch(() => {});
+    throw error;
+  }
+  try {
     const usage = result.usage;
     await traced?.model.complete({
       outcome: 'completed',
@@ -249,11 +256,8 @@ async function tracedGenerate(ctx: DriveContext, model: LanguageModelV4, params:
     const gatewayMeta = (result.providerMetadata?.gateway ?? {}) as Record<string, unknown>;
     const usd = (v: unknown) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v));
     traced?.attempt.attributes({ 'gen_ai.usage.cost': usd(gatewayMeta.cost), 'gen_ai.usage.gateway_cost': usd(gatewayMeta.gatewayCost) });
-    return result;
-  } catch (error) {
-    await traced?.model.fail(error);
-    throw error;
-  }
+  } catch { /* Recording a result must not change the model call's outcome. */ }
+  return result;
 }
 
 function parseJson(text: string): unknown {

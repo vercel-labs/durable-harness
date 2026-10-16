@@ -7,7 +7,10 @@ import { createWorld, type LocalWorld } from '@workflow/world-local';
 import type { DriveContext, EffectRecord, Harness, SessionState, Submission } from 'harness-world';
 import { agentRunsHook } from 'harness-world/agent-runs';
 import { Parked } from 'harness-world/errors';
+import { readJsonLines } from 'harness-world/streams';
+import { gatewayModelOptions } from '../../harness-process/src/agent-runs.ts';
 import { afterAll, describe, expect, it } from 'vitest';
+import { checkpointStreamName } from '../src/instrumentation/checkpoints.ts';
 import { agentRuns } from '../src/instrumentation/otel.ts';
 
 const exporter = new InMemorySpanExporter();
@@ -27,12 +30,12 @@ async function localWorld(): Promise<LocalWorld> {
 }
 
 /** The same World as another process sees it: its own Agent Runs state. With `write`, its stream writes go there. */
-function processOf(world: World, write?: World['streams']['write']): World {
+function processOf(world: World, write?: World['streams']['write'], overrides: Partial<World['streams']> = {}): World {
   const bound = (target: object, key: string | symbol) => {
     const value = Reflect.get(target, key);
     return typeof value === 'function' ? value.bind(target) : value;
   };
-  const streams = new Proxy(world.streams, { get: (target, key) => (key === 'write' && write ? write : bound(target, key)) });
+  const streams = new Proxy(world.streams, { get: (target, key) => key in overrides ? Reflect.get(overrides, key) : key === 'write' && write ? write : bound(target, key) });
   return new Proxy(world, { get: (target, key) => (key === 'streams' ? streams : bound(target, key)) });
 }
 
@@ -60,6 +63,160 @@ const harness = (drive: (ctx: DriveContext) => Promise<void>): Harness => ({ nam
 const of = (runId: string) => exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === runId);
 
 describe('Agent Runs across drives and processes', () => {
+  it('records public tool definitions without persisting provider credentials', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_tool_definitions';
+    const session = hook.session({ world, runId, agentName: 'public-tools', audience: 'public' });
+    const turn = (await session.turn({ turnId: 'turn', sequence: 0 }))!;
+    const step = await session.step(turn, 'turn');
+    const options = gatewayModelOptions({ path: '/v1/responses', body: {
+      model: 'test/model', input: 'Look up the record',
+      tools: [{ type: 'mcp', name: 'remote_lookup', authorization: 'test-only-credential', headers: { 'x-api-key': 'test-only-credential' }, parameters: { type: 'object' } }],
+    } });
+    const model = await step.modelCall(options);
+    await session.flush();
+    const lines = await readJsonLines(world, runId, checkpointStreamName(runId, 'turn'));
+    expect(JSON.stringify(lines)).toContain('remote_lookup');
+    expect(JSON.stringify(lines)).not.toContain('test-only-credential');
+    await model.complete({ outcome: 'completed', result: { usage: {}, finishReason: 'stop', content: [{ type: 'text', text: 'done' }] } });
+    await step.complete();
+    await turn.complete({ outcome: 'completed' });
+    await session.flush();
+    await runs.forceFlush();
+    const recorded = of(runId).find(span => span.attributes['gen_ai.operation.name'] === 'chat')!;
+    expect(recorded.attributes['gen_ai.tool.definitions']).toContain('remote_lookup');
+    expect(JSON.stringify(recorded.attributes)).not.toContain('test-only-credential');
+  });
+
+  it('runs untraced without overwriting a checkpoint when its read fails', async () => {
+    const original = await localWorld();
+    let writes = 0;
+    const world = processOf(original, async () => { writes++; }, { getInfo: async () => { throw new Error('checkpoint unavailable'); } });
+    let ran = false;
+    await hook.drive(harness(async ctx => {
+      expect(await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => { ran = true; return 'model reply'; })).toBe('model reply');
+    }), driveContext(world, 'wrun_read_failed'));
+    expect(ran).toBe(true);
+    expect(writes).toBe(0);
+  });
+
+  it('lets a drive finish when its checkpoint read never answers', async () => {
+    const world = processOf(await localWorld(), undefined, { getInfo: () => new Promise(() => {}) });
+    let ran = false;
+    const ctx = { ...driveContext(world, 'wrun_read_stuck'), deadline: Date.now() + 10 };
+    await hook.drive(harness(async ctx => {
+      await ctx.effect('model:0', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => { ran = true; return 'model reply'; });
+    }), ctx);
+    expect(ran).toBe(true);
+  }, 1000);
+
+  it('continues the placed turn before switching to a queued follow-up', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_followup';
+    const session = hook.session({ world, runId, agentName: 'recovery', audience: 'public' });
+    await session.turn({ turnId: 'sub_1', sequence: 0, title: 'hello' });
+    await session.flush();
+    const ctx = driveContext(processOf(world), runId);
+    const followUp: Submission = { id: 'sub_2', kind: 'followUp', text: 'next prompt', receivedAt: new Date() };
+    ctx.state().submissions.push(followUp);
+    await hook.drive(harness(async ctx => {
+      await ctx.effect('model:continued', { name: 'model', replay: 'safe', input: { model: 'test/model' } }, async () => 'continued first answer');
+      await ctx.effect('model:next', { name: 'model', replay: 'safe', input: { model: 'test/model' }, placed: ['sub_2'] }, async () => 'follow-up answer');
+    }), { ...ctx, pending: () => [followUp] });
+    await runs.forceFlush();
+    const turns = of(runId).filter(span => span.name === 'invoke_agent recovery');
+    expect(turns).toHaveLength(2);
+    const first = turns.find(span => span.attributes['agent.turn.id'] === 'sub_1')!;
+    const second = turns.find(span => span.attributes['agent.turn.id'] === 'sub_2')!;
+    expect(first.attributes['gen_ai.output.messages']).toContain('continued first answer');
+    expect(second.attributes['gen_ai.output.messages']).toContain('follow-up answer');
+    expect(first.attributes['agent.turn.outcome']).toBe('completed');
+    expect(second.attributes['agent.turn.outcome']).toBe('completed');
+  });
+
+  it.each([
+    { audience: 'private' as const, freshProcess: false },
+    { audience: 'private' as const, freshProcess: true },
+    { audience: 'unknown' as const, freshProcess: true },
+  ])('narrows a resumed public turn and its children for $audience capture (fresh process: $freshProcess)', async ({ audience, freshProcess }) => {
+    const world = await localWorld();
+    const runId = `wrun_capture_${audience}_${freshProcess}`;
+    const initial = hook.session({ world, runId, agentName: 'pi', audience: 'public' });
+    const turn = (await initial.turn({ turnId: 't1', sequence: 0, title: 'initial public title' }))!;
+    const step = await initial.step(turn, 't1');
+    await step.tool({ callId: 'call_1', name: 'lookup', arguments: { q: 'initial public argument' } });
+    await initial.flush();
+
+    // Pi recovery resumes before it records fresh generations or settles an earlier tool.
+    const resumedSession = hook.session({ world: freshProcess ? processOf(world) : world, runId, agentName: 'pi', audience });
+    const resumed = (await resumedSession.resume('t1'))!;
+    const tool = resumed.findTool('call_1')!;
+    const metadata = { emit: true, recordInputs: false, recordOutputs: false };
+    expect(resumed.reference).toEqual(turn.reference);
+    expect(resumed.capture).toEqual(metadata);
+    expect(tool.capture).toEqual(metadata);
+
+    const markers = ['restricted model input', 'restricted model output', 'restricted tool result', 'restricted new tool input', 'restricted new tool result'];
+    await tool.complete({ outcome: 'completed', output: markers[2] });
+    const next = await resumedSession.step(resumed, 't1');
+    const model = await next.modelCall({ provider: 'test', modelId: 'model', messages: [{ role: 'user', content: markers[0] }] });
+    expect(model.capture).toEqual(metadata);
+    await model.complete({ outcome: 'completed', result: { usage: { inputTokens: 2, outputTokens: 3 }, finishReason: 'stop', content: [{ type: 'text', text: markers[1]! }] } });
+    const nextTool = await next.tool({ callId: 'call_2', name: 'lookup', arguments: { q: markers[3] } });
+    await nextTool.complete({ outcome: 'completed', output: markers[4] });
+    await resumedSession.flush();
+
+    const lines = await readJsonLines(world, runId, checkpointStreamName(runId, 't1'));
+    const snapshot = (lines.filter((line) => line && typeof line === 'object' && 'v' in line).at(-1) as { v: unknown }).v;
+    expect(snapshot).toMatchObject({ capture: metadata });
+    const stored = JSON.stringify(snapshot);
+    for (const marker of [...markers, 'initial public title', 'initial public argument']) expect(stored).not.toContain(marker);
+
+    await next.complete();
+    await resumed.complete({ outcome: 'completed' });
+    await resumedSession.flush();
+    await runs.forceFlush();
+    const spans = of(runId);
+    expect(spans.filter((span) => span.attributes['gen_ai.operation.name'] === 'chat')).toHaveLength(1);
+    expect(spans.filter((span) => span.attributes['gen_ai.operation.name'] === 'execute_tool')).toHaveLength(2);
+    for (const marker of markers) expect(JSON.stringify(spans.map((span) => ({ attributes: span.attributes, events: span.events, status: span.status })))).not.toContain(marker);
+    const root = spans.find((span) => span.name === 'invoke_agent pi')!;
+    expect(root.attributes).toMatchObject({ 'agent.channel.audience': audience, 'agent.trace.content.input': false, 'agent.trace.content.output': false });
+  });
+
+  it('does not start a turn when resume finds no checkpoint', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_resume_missing';
+    const session = hook.session({ world, runId, agentName: 'pi', audience: 'private' });
+    expect(await session.resume('missing')).toBeUndefined();
+    await session.flush();
+    await runs.forceFlush();
+    expect(of(runId)).toEqual([]);
+  });
+
+  it('narrows restored tools settled from memoized kernel effects', async () => {
+    const world = await localWorld();
+    const runId = 'wrun_memoized_capture';
+    const initial = hook.session({ world, runId, agentName: 'recovery', audience: 'public' });
+    const turn = (await initial.turn({ turnId: 'sub_1', sequence: 0, title: 'hello' }))!;
+    await (await initial.step(turn, 'sub_1')).tool({ callId: 'call_1', name: 'lookup', arguments: {} });
+    await initial.flush();
+
+    const ctx = driveContext(processOf(world), runId);
+    const marker = 'restricted recovered tool result';
+    const resumed = { ...ctx, config: { traceAudience: 'private' }, effect: async () => marker } as unknown as DriveContext;
+    await hook.drive(harness(async (ctx) => {
+      expect(await ctx.effect('tool:call_1', { name: 'tool.lookup', replay: 'safe', input: {} }, async () => { throw new Error('memoized work must not run'); })).toBe(marker);
+    }), resumed);
+    await runs.forceFlush();
+    const spans = of(runId);
+    const tool = spans.find((span) => span.name === 'execute_tool lookup')!;
+    expect(tool).toBeDefined();
+    expect(tool.attributes['gen_ai.tool.call.result']).toBeUndefined();
+    expect(JSON.stringify(spans.map((span) => ({ attributes: span.attributes, events: span.events, status: span.status })))).not.toContain(marker);
+    expect(spans.find((span) => span.name === 'invoke_agent recovery')!.attributes).toMatchObject({ 'agent.trace.content.input': false, 'agent.trace.content.output': false });
+  });
+
   it('keeps a parked tool call open for the drive that settles it', async () => {
     const world = await localWorld();
     const runId = 'wrun_parked';

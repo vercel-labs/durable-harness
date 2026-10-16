@@ -23,6 +23,6 @@
     "harness-world": "workspace:*",
     "harness-world-hands": "workspace:*",
     "zod": "4.5.4",
-    "@vercel/agent-runs": "0.0.0"
+    "@vercel/agent-runs": "0.0.1"
   }
 }

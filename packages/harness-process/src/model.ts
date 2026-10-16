@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { armedChaos, chaosKind, chaosMatches, type DriveContext, EffectFailure, type SessionState } from 'harness-world';
-import { gatewayModelOptions, gatewayModelResult } from './agent-runs.ts';
+import { gatewayModelOptions, gatewayModelResult, isModelRequest } from './agent-runs.ts';
 import type { TrackedRequest, TrackEnd } from './gateway.ts';
 
 /**
@@ -59,8 +59,7 @@ export interface ModelStepOutput {
 }
 
 /** Whether a request is a model call: a POST (not a token count). */
-export const isModelRequest = (request: { method: string; path: string }) =>
-  request.method === 'POST' && !request.path.includes('count_tokens');
+export { isModelRequest } from './agent-runs.ts';
 
 /** A crash armed in `state` would fire in a model step: a Kill Function, or a dropped relay on the session's sandbox (D4: `/model` dropped mid-stream). */
 export function modelCrashArmed(state: SessionState): boolean {
@@ -151,7 +150,7 @@ export class ModelSteps {
     const end: TrackEnd = (outcome) => {
       if (over) return;
       over = true;
-      void traced?.then(async (call) => {
+      const recording = traced?.then(async (call) => {
         if (!call) return;
         const failed = outcome.error ?? (outcome.status !== undefined && outcome.status >= 400 ? `the model request failed (${outcome.status})` : undefined);
         if (failed !== undefined) return call.model.fail(new Error(failed));
@@ -159,6 +158,10 @@ export class ModelSteps {
         call.attempt.attributes(attributes);
         await call.model.complete({ outcome: 'completed', result });
       }).catch(() => {});
+      if (recording) {
+        this.running.add(recording);
+        void recording.then(() => this.running.delete(recording));
+      }
       this.ctx.mark?.('model.done', { key, ...(outcome.status !== undefined ? { status: outcome.status } : {}), ...(outcome.error ? { error: outcome.error } : {}) });
       this.inflight--;
       const step = this.step;
@@ -201,7 +204,8 @@ export class ModelSteps {
     step?.done();
     if (!this.running.size) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([Promise.allSettled([...this.running]), new Promise<void>((r) => (timer = setTimeout(r, waitMs)))]);
+    const remaining = Math.max(0, Math.min(waitMs, (this.ctx.deadline ?? Infinity) - Date.now()));
+    await Promise.race([Promise.allSettled([...this.running]), new Promise<void>((r) => (timer = setTimeout(r, remaining)))]);
     clearTimeout(timer);
   }
 

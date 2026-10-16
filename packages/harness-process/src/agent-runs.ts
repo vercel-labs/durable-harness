@@ -1,5 +1,6 @@
 import type { Attributes } from '@vercel/agent-runs';
 import type { ContentPart, ModelOptions, ModelResult } from 'harness-world/agent-runs';
+import { modelMessages, modelTools } from 'harness-world/agent-runs';
 
 /**
  * A CLI's model requests, as Agent Runs records them: the CLIs speak
@@ -14,6 +15,8 @@ const list = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.ma
 /** An AI SDK model message, as the library reads it. */
 type Msg = { role: string; content: string | Record<string, unknown>[] };
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+export const isModelRequest = (request: { method: string; path: string }) => request.method === 'POST' && !request.path.includes('count_tokens');
 
 /** A response's text as it streams: its start, and its end (where usage and the finish are), within bounds. */
 export class ResponseCapture {
@@ -122,7 +125,7 @@ export function gatewayModelOptions(request: { path: string; model?: string; bod
     protocol === 'anthropic' ? anthropicMessages(body)
     : protocol === 'responses' ? responsesMessages(body)
     : protocol === 'chat' ? chatMessages(body)
-    : protocol === 'gateway' ? list(body.prompt).filter((m) => m.role !== 'system')
+    : protocol === 'gateway' ? modelMessages(list(body.prompt).filter((m) => m.role !== 'system'))
     : undefined;
   const instructions = instructionsOf(protocol, body);
   return {
@@ -130,7 +133,7 @@ export function gatewayModelOptions(request: { path: string; model?: string; bod
     modelId: id,
     ...(messages ? { messages } : {}),
     ...(instructions ? { instructions } : {}),
-    ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
+    ...(Array.isArray(body.tools) ? { tools: modelTools(body.tools) } : {}),
   };
 }
 

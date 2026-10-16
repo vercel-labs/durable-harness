@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { codexStandIn } from '../scenarios/codex.ts';
 import { admit, ready, ScriptedHost } from '../scenarios/opencode.ts';
 import { newHost, type TrackedHost, turnsEnded } from '../scenarios/process.ts';
-import { expectToolTurn, kernelTurn, type Tracing, tracing } from '../src/agent-runs.ts';
+import { expectNoCheckpointContent, expectToolTurn, kernelTurn, type Tracing, tracing } from '../src/agent-runs.ts';
 import { storageFor } from '../src/worlds.ts';
 
 /**
@@ -46,23 +46,25 @@ import { storageFor } from '../src/worlds.ts';
 
 const MARKER = 'zebra-7f3a';
 let t: Tracing;
-beforeAll(() => {
-  t = tracing();
-});
-afterAll(() => t.close());
 
 const disposers: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
   for (const d of disposers.splice(0).reverse()) await Promise.resolve(d()).catch(() => {});
 });
 
-const turn = (name: string, harness: Harness, prompt: string, done: (s: SessionState) => boolean) => kernelTurn(t, disposers, name, harness, prompt, done);
+const turn = async (name: string, harness: Harness, prompt: string, done: (s: SessionState) => boolean) => {
+  const result = await kernelTurn(t, disposers, name, harness, prompt, done);
+  if (!t.content) await expectNoCheckpointContent(result.world, result.sessionId, MARKER);
+  return result;
+};
 
 const SHOUT_PROMPT = `shout ${MARKER}`;
 const modelDone = (n: number) => (s: SessionState) => s.effectOrder.filter((e) => e.name === 'model' && e.status === 'completed').length >= n;
 const checkpointed = (s: SessionState) => s.effects.get('checkpoint:0')?.status === 'completed';
 
-describe('Agent Runs: one tool turn per server harness', () => {
+describe.each([true, false])('Agent Runs: one tool turn per server harness (capture content: %s)', content => {
+  beforeAll(() => { t = tracing(content); });
+  afterAll(() => t.close());
   it('Pi (harness-world-pi)', async () => {
     const faux = fauxProvider();
     faux.setResponses([fauxAssistantMessage(fauxToolCall('shout', { text: MARKER }), { stopReason: 'toolUse' }), fauxAssistantMessage(fauxText('Shouted.'))]);
@@ -137,6 +139,7 @@ describe('Agent Runs: one tool turn per server harness', () => {
     expect((await (await root.submit({ type: 'input', content: SHOUT_PROMPT }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status).toBe('done');
     await harness.close(BACKGROUND_CONTEXT);
     const spans = await t.finishedTurn(storage.sessionId, 'pi-durable');
+    if (!t.content) await expectNoCheckpointContent(open.world, storage.sessionId, MARKER);
     expectToolTurn(spans, { sessionId: storage.sessionId, marker: MARKER, harness: 'pi-durable', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true });
   });
 

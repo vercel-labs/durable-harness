@@ -76,7 +76,7 @@ export default defineConfig({
     cli: 'src/cli.ts',
   },
   format: ['esm'],
-  target: 'node24',
+  target: 'node22',
   platform: 'node',
   removeNodeProtocol: false,
   splitting: true,

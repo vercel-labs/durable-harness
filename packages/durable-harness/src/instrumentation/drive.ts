@@ -66,6 +66,7 @@ const isPrompt = (s: Submission | undefined): s is Submission & { text: string }
 export async function traceDrive(options: DriveTracerOptions, harness: Harness, ctx: DriveContext): Promise<void> {
   const { run, streams } = options;
   streams.forget(ctx.runId);
+  streams.setDeadline(ctx.runId, ctx.deadline);
   const audience = traceAudienceOf(record(ctx.config).traceAudience) ?? options.audience;
   const capture = options.capture(audience);
   const self = harness.modelCalls === 'self';
@@ -79,7 +80,7 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     if (!turn) turns.set(submission.id, (turn = { submission, steps: [], requests: 0 }));
     return turn;
   };
-  const initial = ctx.pending().find(isPrompt) ?? prompts().filter((s) => ctx.state().placed.has(s.id)).at(-1);
+  const initial = prompts().filter((s) => ctx.state().placed.has(s.id)).at(-1) ?? ctx.pending().find(isPrompt);
   if (initial) current = turnOf(initial);
 
   function input(submission: Submission): TurnInput {
@@ -108,8 +109,12 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
   /** The turn's operation if this or an earlier drive started it and it is still open. */
   async function saved(turn: TurnTrace): Promise<TurnOperation | undefined> {
     if (turn.op) return turn.op;
-    const resumed = await run.resume({ identity: input(turn.submission).identity });
-    if (resumed) turn.op = Promise.resolve(resumed);
+    const data = input(turn.submission);
+    if (!(await run.resume({ identity: data.identity }))) return undefined;
+    // Re-enter before exposing restored children so recovery cannot retain an older, wider capture policy.
+    const resumed = await run.turn(data);
+    resumed.attributes({ 'agent.channel.audience': audience });
+    turn.op = Promise.resolve(resumed);
     return resumed;
   }
 
@@ -224,9 +229,15 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     const { tool, step } = traced;
     if (step) step.open++;
     let value: T;
+    let entered = false;
     try {
-      value = await tool.run(execute);
+      value = await tool.run(() => { entered = true; return execute(); });
     } catch (error) {
+      if (!entered) {
+        if (step) step.open--;
+        await tool.complete({ outcome: 'abandoned' }).catch(() => {});
+        return execute();
+      }
       // A call the drive stopped under, or handed off, goes on in a later drive: its span stays open for it.
       if (!(error instanceof Parked) && !ctx.signal.aborted) {
         if (step) step.open--;
@@ -255,9 +266,23 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     if (!step) return execute();
     const id = String(record(effect.input).model ?? 'unknown');
     const slash = id.indexOf('/');
-    const model = watch(await step.op.modelCall({ provider: slash > 0 ? id.slice(0, slash) : 'unknown', modelId: slash > 0 ? id.slice(slash + 1) : id }), step);
+    let model: ModelOperation;
     try {
-      const value = await model.run(execute);
+      model = watch(await step.op.modelCall({ provider: slash > 0 ? id.slice(0, slash) : 'unknown', modelId: slash > 0 ? id.slice(slash + 1) : id }), step);
+    } catch { return execute(); }
+    let value: T;
+    let entered = false;
+    try {
+      value = await model.run(() => { entered = true; return execute(); });
+    } catch (error) {
+      if (!entered) {
+        await model.complete({ outcome: 'abandoned' }).catch(() => {});
+        return execute();
+      }
+      await model.fail(error).catch(() => {});
+      throw error;
+    }
+    try {
       const output = record(value);
       await model.complete({
         outcome: 'completed',
@@ -267,11 +292,8 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
           content: typeof value === 'string' ? [{ type: 'text', text: value }] : undefined,
         },
       });
-      return value;
-    } catch (error) {
-      await model.fail(error);
-      throw error;
-    }
+    } catch { /* Recording a result must not change the model effect's outcome. */ }
+    return value;
   }
 
   const tracing: DriveTracing = { modelCall: (o) => modelCall(o).catch(() => undefined) };
@@ -323,7 +345,9 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     } catch {
       // Tracing never fails a drive.
     }
-    await streams.flush();
+    await streams.flush(ctx.runId);
+    streams.forget(ctx.runId);
+    streams.setDeadline(ctx.runId, undefined);
   }
 }
 
@@ -362,4 +386,3 @@ function canonical(args: unknown): string {
     : v;
   return JSON.stringify(sort(value)) ?? '';
 }
-

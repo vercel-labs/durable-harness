@@ -15,7 +15,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "keywords": [
     "agent",
@@ -114,15 +114,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup",
-    "prepack": "tsup",
+    "build": "tsup && node scripts/inline-tracing-types.mjs",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check-dist": "node scripts/check-dist.mjs"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.0",
-    "@vercel/agent-runs": "0.0.0",
     "@vercel/oidc": "3.2.0",
     "@workflow/utils": "^5.0.2",
     "@workflow/world": "^5.0.4",
@@ -146,6 +145,7 @@
     "@opentelemetry/otlp-transformer": ">=0.208.0 <1",
     "@opentelemetry/resources": "^2.2.0",
     "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@vercel/agent-runs": "0.0.1",
     "@vercel/sandbox": "^3.7.0",
     "@workflow/world-postgres": "^5.0.4",
     "effect": "4.0.0-rc.112",
@@ -155,6 +155,9 @@
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
+    "@vercel/agent-runs": {
+      "optional": true
+    },
     "@anthropic-ai/claude-agent-sdk": {
       "optional": true
     },
@@ -226,6 +229,7 @@
     "@opentelemetry/otlp-transformer": "0.208.0",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
+    "@vercel/agent-runs": "0.0.1",
     "effect": "4.0.0-rc.112",
     "harness-world": "workspace:*",
     "harness-world-claude-code": "workspace:*",
@@ -239,6 +243,8 @@
     "libfx": "catalog:",
     "next": "16.3.8",
     "pi-world": "workspace:*",
+    "rollup": "4.63.5",
+    "rollup-plugin-dts": "6.2.3",
     "tsup": "8.5.1",
     "zod": "4.5.4"
   }

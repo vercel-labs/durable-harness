@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@vercel/agent-runs": "0.0.0",
+    "@vercel/agent-runs": "0.0.1",
     "@workflow/world": "catalog:",
     "devalue": "^5.9.4",
     "ulid": "^3.0.1"
