@@ -26,7 +26,9 @@
     "harness-world": "workspace:*",
     "ulid": "^3.0.1",
     "harness-world-hands": "workspace:*",
-    "harness-world-process": "workspace:*"
+    "harness-world-process": "workspace:*",
+    "@vercel/agent-runs": "0.0.0",
+    "harness-world-pi": "workspace:*"
   },
   "devDependencies": {
     "@workflow/world-local": "catalog:",

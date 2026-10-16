@@ -22,6 +22,7 @@
     "durable-harness": "workspace:*",
     "harness-world": "workspace:*",
     "harness-world-hands": "workspace:*",
-    "zod": "4.5.4"
+    "zod": "4.5.4",
+    "@vercel/agent-runs": "0.0.0"
   }
 }

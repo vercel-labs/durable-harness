@@ -139,19 +139,19 @@ describe('gatewayProxy', () => {
     await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
     closers.push(() => new Promise((done) => server.close(() => done())));
     const seen: string[] = [];
-    let finish!: (outcome: { responseBody?: string }) => void;
-    const finished = new Promise<{ responseBody?: string }>((resolve) => { finish = resolve; });
+    let finish!: (outcome: { response?: string }) => void;
+    const finished = new Promise<{ response?: string }>((resolve) => { finish = resolve; });
     const proxy = await gatewayProxy({
       target: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
       credential: async () => 'secret',
       token: KEY,
-      track: () => Object.assign((outcome: { responseBody?: string }) => { seen.push('end'); finish(outcome); }, { capture, firstToken: () => seen.push('first') }),
+      track: () => Object.assign((outcome: { response?: string }) => { seen.push('end'); finish(outcome); }, { capture, firstToken: () => seen.push('first') }),
     });
     closers.push(proxy.close);
     const res = await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: keyed, body: '{}' });
     const response = await res.text();
     const outcome = await finished;
-    expect(outcome.responseBody).toBe(capture ? response : undefined);
+    expect(outcome.response).toBe(capture ? response : undefined);
     expect(seen).toEqual(['first', 'end']);
   });
 
@@ -182,11 +182,12 @@ describe('gatewayProxy', () => {
     const target = await upstream();
     let finish!: (value: Record<string, unknown>) => void;
     const finished = new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
+    const tracked: unknown[] = [];
     const proxy = await gatewayProxy({
       target: target.url,
       credential: async () => 'secret-upstream-key',
       token: KEY,
-      track: () => Object.assign(finish, { capture: true }),
+      track: (request) => (tracked.push(request), Object.assign(finish, { capture: true })),
     });
     closers.push(proxy.close);
     const response = await fetch(`${proxy.url}/v1/messages`, {
@@ -196,22 +197,22 @@ describe('gatewayProxy', () => {
     });
     expect(await response.text()).toBe('data: one\n\ndata: two\n\n');
     const capture = await finished;
-    expect(capture).toMatchObject({ status: 200, requestBody: { model: 'test', messages: [{ role: 'user', content: 'hello 🌍' }] }, responseBody: 'data: one\n\ndata: two\n\n' });
-    expect(JSON.stringify(capture)).not.toContain('secret-upstream-key');
+    expect(tracked).toEqual([{ method: 'POST', path: '/v1/messages', body: { model: 'test', messages: [{ role: 'user', content: 'hello 🌍' }] } }]);
+    expect(capture).toMatchObject({ status: 200, response: 'data: one\n\ndata: two\n\n' });
+    expect(JSON.stringify([tracked, capture])).not.toContain('secret-upstream-key');
+    expect(JSON.stringify([tracked, capture])).not.toContain(KEY);
   });
-  it('bounds capture while forwarding oversized bodies completely', async () => {
+  it('forwards a large request and response whole while it tracks them', async () => {
     const text = 'x'.repeat(300_000);
     const target = await upstream([text]);
-    let finish!: (value: { requestBody?: unknown; responseBody?: string }) => void;
-    const finished = new Promise<{ requestBody?: unknown; responseBody?: string }>(resolve => { finish = resolve; });
+    let finish!: (value: { response?: string }) => void;
+    const finished = new Promise<{ response?: string }>(resolve => { finish = resolve; });
     const proxy = await gatewayProxy({ target: target.url, credential: async () => 'secret', token: KEY, track: () => Object.assign(finish, { capture: true }) });
     closers.push(proxy.close);
     const body = JSON.stringify({ messages: text });
     const response = await fetch(`${proxy.url}/v1/messages`, { method: 'POST', headers: keyed, body });
     expect(await response.text()).toBe(text);
-    const capture = await finished;
-    expect(capture.responseBody).toHaveLength(256_000);
-    expect(capture.requestBody).toBeUndefined();
+    expect((await finished).response).toBe(text);
     expect(target.seen[0]!.body).toBe(body);
   });
   it('passes the Gateway model header to tracking without exposing other headers', async () => {
@@ -230,7 +231,8 @@ describe('gatewayProxy', () => {
       body: JSON.stringify({ prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] }),
     });
     await response.text();
-    expect(starts).toEqual([{ method: 'POST', path: '/v3/ai/language-model', model: 'anthropic/claude-haiku-4.5' }]);
+    expect(starts).toEqual([{ method: 'POST', path: '/v3/ai/language-model', model: 'anthropic/claude-haiku-4.5', body: { prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }] } }]);
+    expect(JSON.stringify(starts)).not.toContain('private-header');
     expect(target.seen[0]!.headers?.['ai-language-model-id']).toBe('anthropic/claude-haiku-4.5');
   });
 });

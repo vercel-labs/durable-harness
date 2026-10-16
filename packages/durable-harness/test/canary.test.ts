@@ -141,7 +141,8 @@ afterAll(() => {
 // ---------- Agent Runs: every span, content visible ----------
 
 const spans = new InMemorySpanExporter();
-agentRuns({ audience: 'public', exportPolicy: { span: () => ({ emit: true }) }, spanProcessors: [new SimpleSpanProcessor(spans)] }).register();
+// Content recorded for every audience: the search sees everything a span could carry.
+agentRuns({ capture: () => ({ emit: true, recordInputs: true, recordOutputs: true }), spanProcessors: [new SimpleSpanProcessor(spans)] }).register();
 const spansOf = (runIds: Set<string>) => spans.getFinishedSpans().filter((s) => runIds.has(String(s.attributes['agent.run.id'])));
 const spanTexts = (list: ReturnType<typeof spansOf>) => list.map((s) => JSON.stringify({ name: s.name, attributes: s.attributes, events: s.events, status: s.status, links: s.links }));
 

@@ -79,7 +79,7 @@ describe('Agent Runs: one tool turn per server harness', () => {
     };
     const harness = piHarness({ model: faux.getModel(), streamFn: models.streamSimple.bind(models), systemPrompt: 'Be loud.', tools: [shout] });
     const { sessionId, spans } = await turn('pi', harness, SHOUT_PROMPT, modelDone(2));
-    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'pi', tool: 'shout', modelContent: true, model: faux.getModel().provider + '/' + faux.getModel().id, usage: true });
+    expectToolTurn(spans, { sessionId, marker: MARKER, harness: 'pi', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true });
   });
 
   const libfxAddon = join(dirname(createRequire(import.meta.url).resolve('libfx')), `libfx.${process.platform}-${process.arch}.node`);
@@ -137,7 +137,7 @@ describe('Agent Runs: one tool turn per server harness', () => {
     expect((await (await root.submit({ type: 'input', content: SHOUT_PROMPT }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status).toBe('done');
     await harness.close(BACKGROUND_CONTEXT);
     const spans = await t.finishedTurn(storage.sessionId, 'pi-durable');
-    expectToolTurn(spans, { sessionId: storage.sessionId, marker: MARKER, harness: 'pi-durable', tool: 'shout', modelContent: true, model: `${faux.getModel().provider}/${faux.getModel().id}`, usage: true });
+    expectToolTurn(spans, { sessionId: storage.sessionId, marker: MARKER, harness: 'pi-durable', tool: 'shout', modelContent: true, model: faux.getModel().id, usage: true });
   });
 
   /** The scripted process CLIs: `call <tool> <json>` makes one bridged tool call; what they say goes through the proxy to the model. */

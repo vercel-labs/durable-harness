@@ -15,7 +15,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "keywords": [
     "agent",
@@ -122,6 +122,7 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.0",
+    "@vercel/agent-runs": "0.0.0",
     "@vercel/oidc": "3.2.0",
     "@workflow/utils": "^5.0.2",
     "@workflow/world": "^5.0.4",

@@ -33,6 +33,7 @@ import {
   type UnavailableInput,
   Yield,
 } from 'harness-world';
+import { piModelOptions, piModelResult, piStepAttributes } from './agent-runs.ts';
 
 export interface PiHarnessOptions {
   /** The pi-ai model to drive. */
@@ -97,7 +98,6 @@ interface ModelInput {
   /** Total messages in the request context (a replay divergence check). */
   contextLength: number;
   model: string;
-  instrumentation?: 'adapter';
 }
 
 /**
@@ -114,6 +114,7 @@ interface ModelInput {
 export function piHarness(options: PiHarnessOptions): Harness {
   return {
     name: 'pi',
+    modelCalls: 'self',
     drive: (ctx) => new PiDrive(options, ctx).run(),
   };
 }
@@ -279,7 +280,6 @@ class PiDrive {
             appended,
             contextLength: messages.length,
             model: `${model.provider}/${model.id}`,
-            ...(this.ctx.instrumentation ? { instrumentation: 'adapter' as const } : {}),
           } satisfies ModelInput,
         },
         async (io): Promise<ModelOutput> => {
@@ -294,11 +294,9 @@ class PiDrive {
           const request = hook ? withDocuments(context, shown, at, docs) : context;
           const record = (message: AssistantMessage): ModelOutput =>
             hook && at >= 0 && docs !== (shown.get(at) ?? '') ? { ...message, promptDocs: { at, text: docs } } : message;
-          const operation = this.ctx.instrumentation?.start('model', {
-            model: `${model.provider}/${model.id}`, messages: request.messages,
-          }, key);
+          const traced = await this.ctx.tracing?.modelCall(piModelOptions(model, request.messages));
+          let last: AssistantMessage | undefined;
           try {
-            let last: AssistantMessage | undefined;
             for (let attempt = 1; attempt <= attempts; attempt++) {
               const inner = await this.options.streamFn(model, request, opts);
               let first = attempt > 1;
@@ -318,11 +316,18 @@ class PiDrive {
               last = await inner.result();
               // Halted mid-stream: the cut-off response is not this step's outcome.
               if (this.stop) throw this.stop;
-              if (last.stopReason !== 'error') { operation?.end(last); return record(last); }
+              if (last.stopReason !== 'error') {
+                traced?.attempt.attributes(piStepAttributes(last));
+                await traced?.model.complete({ outcome: 'completed', result: piModelResult(last) });
+                return record(last);
+              }
               await sleep(500 * attempt);
             }
             throw new Error(last?.errorMessage ?? 'model call failed');
-          } catch (error) { operation?.end(undefined, this.stop ? undefined : error); throw error; }
+          } catch (error) {
+            await traced?.model.fail(error);
+            throw error;
+          }
         }
       );
     };

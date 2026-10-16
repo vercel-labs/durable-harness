@@ -205,6 +205,8 @@ export function opencodeHarness(options: OpenCodeHarnessOptions = {}): Harness {
 
   return {
     name: options.name ?? 'opencode',
+    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+    modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Another OpenCode or effect than the pins fails the turn here, with both versions, instead of hanging it.
       assertOpenCodeVersions();

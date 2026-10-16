@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { armedChaos, chaosKind, chaosMatches, type DriveContext, EffectFailure, type SessionState } from 'harness-world';
-import type { TrackEnd } from './gateway.ts';
+import { gatewayModelOptions, gatewayModelResult } from './agent-runs.ts';
+import type { TrackedRequest, TrackEnd } from './gateway.ts';
 
 /**
  * Model steps: a record-only `model` effect around a process harness's model
@@ -136,9 +137,10 @@ export class ModelSteps {
    * output, `model.done`), as a Pi or fx model step is, so a page can take
    * the model's own time out of the turn: the CLI's model call is not a step.
    */
-  readonly request = (request: { method: string; path: string; model?: string }): TrackEnd | undefined => {
+  readonly request = (request: TrackedRequest): TrackEnd | undefined => {
     if (!isModelRequest(request) || this.closed) return undefined;
-    const trace = this.ctx.instrumentation?.start('model', request);
+    // Agent Runs: each request is a model call, a step of its own, with what was asked and answered.
+    const traced = this.ctx.tracing?.modelCall(gatewayModelOptions(request)).catch(() => undefined);
     const key = `request:${this.ordinal++}`;
     this.ctx.mark?.('model.request', { key });
     this.inflight++;
@@ -149,12 +151,18 @@ export class ModelSteps {
     const end: TrackEnd = (outcome) => {
       if (over) return;
       over = true;
-      trace?.end(outcome, outcome.error ?? (outcome.status && outcome.status >= 400 ? new Error(`Model request failed (${outcome.status})`) : undefined));
+      void traced?.then(async (call) => {
+        if (!call) return;
+        const failed = outcome.error ?? (outcome.status !== undefined && outcome.status >= 400 ? `the model request failed (${outcome.status})` : undefined);
+        if (failed !== undefined) return call.model.fail(new Error(failed));
+        const { result, attributes } = gatewayModelResult(request.path, outcome.response ?? '');
+        call.attempt.attributes(attributes);
+        await call.model.complete({ outcome: 'completed', result });
+      }).catch(() => {});
       this.ctx.mark?.('model.done', { key, ...(outcome.status !== undefined ? { status: outcome.status } : {}), ...(outcome.error ? { error: outcome.error } : {}) });
       this.inflight--;
       const step = this.step;
       if (!step) return;
-      // Content belongs to the policy-controlled trace, not the chaos journal.
       step.last = { status: outcome.status, error: outcome.error };
       if (this.inflight > 0) return;
       // The step is over: a request that starts now gets a step of its own.
@@ -162,7 +170,7 @@ export class ModelSteps {
       step.done();
     };
     return Object.assign(end, {
-      capture: !!trace,
+      capture: this.ctx.tracing !== undefined,
       firstToken: () => {
         if (first || over) return;
         first = true;

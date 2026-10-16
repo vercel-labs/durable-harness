@@ -1,26 +1,25 @@
 import { appendFileSync } from 'node:fs';
 import { InMemorySpanExporter, type ReadableSpan, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { type AgentRunsIntegration, agentRuns, filteringProcessor } from 'durable-harness/instrumentation/otel';
+import { type AgentRuns, agentRuns } from 'durable-harness/instrumentation/otel';
 import { durableSessions, type Harness, QUEUE_PREFIX, type SessionState } from 'harness-world';
 import { expect } from 'vitest';
 import { settled, until } from './scenario.ts';
 import { type OpenWorld, storageFor } from './worlds.ts';
 
 /**
- * Vercel Agent Runs checks: durable-harness's OpenTelemetry integration
- * (`agentRuns()`) with an in-memory span processor, and what one tool turn
- * of a harness must give it.
+ * Vercel Agent Runs checks: durable-harness's `agentRuns()` (on
+ * `@vercel/agent-runs`) with an in-memory span processor, and what one tool
+ * turn of a harness must give it.
  *
  * Sessions are started with `traceAudience: 'unknown'` (what an
- * authenticated chat route records) and exported with a policy that emits
- * everything, so the content is there to check; the same spans are then
- * replayed through the default policy (`filteringProcessor`, no policy) to
- * check that a non-public session's spans reach a destination with no
- * prompt, tool or model content.
+ * authenticated chat route records), and traced with a capture decision
+ * that records content for every audience, so the content is there to check.
+ * (That the default records only metadata for a session that is not public
+ * is durable-harness's own test, test/agent-runs.test.ts.)
  */
 
 export interface Tracing {
-  integration: AgentRunsIntegration;
+  integration: AgentRuns;
   exporter: InMemorySpanExporter;
   /** The finished spans of one session (every span carries `agent.run.id`). */
   spansOf(sessionId: string): ReadableSpan[];
@@ -32,7 +31,7 @@ export interface Tracing {
 
 export function tracing(): Tracing {
   const exporter = new InMemorySpanExporter();
-  const integration = agentRuns({ audience: 'public', exportPolicy: { span: () => ({ emit: true }) }, spanProcessors: [new SimpleSpanProcessor(exporter)] });
+  const integration = agentRuns({ capture: () => ({ emit: true, recordInputs: true, recordOutputs: true }), spanProcessors: [new SimpleSpanProcessor(exporter)] });
   integration.register();
   const spansOf = (sessionId: string) => exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === sessionId);
   return {
@@ -46,36 +45,16 @@ export function tracing(): Tracing {
     },
     async close() {
       await integration.forceFlush();
-      delete (globalThis as Record<symbol, unknown>)[Symbol.for('durable-harness.instrumentation')];
+      delete (globalThis as Record<symbol, unknown>)[Symbol.for('durable-harness.agent-runs')];
     },
   };
-}
-
-/** Attributes that carry prompt, model or tool content (durable-harness's redaction list). */
-export const CONTENT_KEYS = [
-  'agent.session.title',
-  'agent.channel.delivery.input',
-  'gen_ai.input.messages',
-  'gen_ai.output.messages',
-  'gen_ai.system_instructions',
-  'gen_ai.tool.definitions',
-  'gen_ai.tool.call.arguments',
-  'gen_ai.tool.call.result',
-];
-
-/** The spans as the default export policy hands them to a destination (no policy: non-public audiences redacted). */
-export function redacted(spans: ReadableSpan[]): ReadableSpan[] {
-  const out: ReadableSpan[] = [];
-  const processor = filteringProcessor({ onStart() {}, onEnd: (s) => void out.push(s), forceFlush: async () => {}, shutdown: async () => {} });
-  for (const span of spans) processor.onEnd(span);
-  return out;
 }
 
 export interface TurnExpect {
   sessionId: string;
   /** The root's agent name: the harness's name (`invoke_agent <harness>`). */
   harness: string;
-  /** A string in the prompt and in the tool call's arguments, never in a redacted span. */
+  /** A string in the prompt and in the tool call's arguments. */
   marker: string;
   /** The tool the turn calls. Undefined: any tool, as long as its arguments carry the marker. */
   tool?: string;
@@ -89,7 +68,7 @@ export interface TurnExpect {
   usage?: boolean;
 }
 
-/** What one tool turn must give Agent Runs: the span tree, its content, and its redaction. */
+/** What one tool turn must give Agent Runs: the span tree and its content. */
 export function expectToolTurn(spans: ReadableSpan[], o: TurnExpect): void {
   // `AGENT_RUNS_DUMP=<file>`: append the span tree (names and ids, no content) for a look by eye.
   if (process.env.AGENT_RUNS_DUMP) appendFileSync(process.env.AGENT_RUNS_DUMP, `${o.harness} ${o.sessionId}\n${outline(spans)}\n`);
@@ -104,14 +83,13 @@ export function expectToolTurn(spans: ReadableSpan[], o: TurnExpect): void {
     'agent.framework.name': 'durable-harness',
     'agent.name': o.harness,
     'agent.run.id': o.sessionId,
-    'vercel.session_id': o.sessionId,
     'gen_ai.operation.name': 'invoke_agent',
     'agent.trace.schema.version': 4,
     'agent.channel.audience': o.audience ?? 'unknown',
     'agent.turn.outcome': 'completed',
   });
-  expect(String(root.attributes['agent.session.title'] ?? root.attributes['agent.channel.delivery.input'])).toContain(o.marker);
-  expect(new Set(spans.map((s) => s.spanContext().traceId)), 'one trace per session').toEqual(new Set([root.spanContext().traceId]));
+  expect(String(root.attributes['agent.session.title'])).toContain(o.marker);
+  expect(new Set(spans.map((s) => s.spanContext().traceId)), 'one trace per turn').toEqual(new Set([root.spanContext().traceId]));
 
   // Steps hang off a root; model and tool spans off a step.
   const steps = spans.filter((s) => s.name === 'agent.step');
@@ -154,20 +132,6 @@ export function expectToolTurn(spans: ReadableSpan[], o: TurnExpect): void {
     spans.filter((s) => s.status.code === 2).map((s) => `${s.name}: ${s.status.message}`),
     'no span failed'
   ).toEqual([]);
-
-  // The default policy: a non-public session's spans carry no content.
-  const out = redacted(spans);
-  if ((o.audience ?? 'unknown') === 'public') {
-    expect(out).toHaveLength(spans.length);
-    return;
-  }
-  expect(out.map((s) => s.name).sort()).toEqual(spans.map((s) => s.name).sort());
-  for (const s of out) {
-    for (const key of CONTENT_KEYS) expect(s.attributes[key], `${s.name}: ${key}`).toBeUndefined();
-    expect(s.attributes['agent.trace.content.input']).toBe(false);
-    expect(s.attributes['agent.trace.content.output']).toBe(false);
-    expect(JSON.stringify({ name: s.name, attributes: s.attributes, status: s.status, events: s.events })).not.toContain(o.marker);
-  }
 }
 
 /**

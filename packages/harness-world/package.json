@@ -16,7 +16,7 @@
     "./fence": "./src/fence.ts",
     "./queue": "./src/queue.ts",
     "./testing": "./src/testing/index.ts",
-    "./instrumentation": "./src/instrumentation.ts",
+    "./agent-runs": "./src/agent-runs.ts",
     "./errors": "./src/errors.ts"
   },
   "scripts": {
@@ -24,6 +24,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@vercel/agent-runs": "0.0.0",
     "@workflow/world": "catalog:",
     "devalue": "^5.9.4",
     "ulid": "^3.0.1"

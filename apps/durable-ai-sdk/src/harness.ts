@@ -20,6 +20,7 @@ import {
   type ToolSet,
   wrapLanguageModel,
 } from 'ai';
+import { modelContent } from '@vercel/agent-runs/ai-sdk';
 import { type DriveContext, EffectFailure, Fatal, type Harness, type HostToolIO, type PromptDocs, promptDocsText, type ReplayPolicy, type SessionState, Yield } from 'durable-harness';
 
 /**
@@ -111,20 +112,17 @@ export function aiSdkHarness({ model, tools = {}, promptDocs, ...settings }: AiS
             const key = `model:${n}:${step++}`;
             sameConversation(ctx, key, params);
             const input = { model: model.modelId, messages: params.prompt.length };
-            const output = await ctx.effect(key, { name: 'model', replay: 'safe', input: { ...input, ...(ctx.instrumentation ? { instrumentation: 'adapter' } : {}) } }, async (io) => {
+            const output = await ctx.effect(key, { name: 'model', replay: 'safe', input }, async (io) => {
               // The prompt hook: the documents as this call pinned them at the
               // start of the latest prompt, and what earlier calls showed on
               // the earlier ones (so the prompt extends the previous one).
-              const shown = promptDocs ? docsShown(ctx.state()) : new Map<number, string>();
+              if (!promptDocs) return tracedGenerate(ctx, model, { ...params, abortSignal: io.signal }, attempts, key);
+              const shown = docsShown(ctx.state());
               const at = params.prompt.findLastIndex((m) => m.role === 'user');
               const docs = promptDocsText(promptDocs, io.docs) ?? '';
-              const prompt = promptDocs ? withDocuments(params.prompt, shown, at, docs) : params.prompt;
-              const operation = ctx.instrumentation?.start('model', { model: model.modelId, messages: prompt }, key);
-              try {
-                const result = await generate(ctx, model, { ...params, prompt, abortSignal: io.signal }, attempts, key);
-                operation?.end({ ...result, role: 'assistant' });
-                return promptDocs && at >= 0 && docs !== (shown.get(at) ?? '') ? { ...result, promptDocs: { at, text: docs } satisfies ShownDocs } : result;
-              } catch (error) { operation?.end(undefined, io.signal.aborted ? undefined : error); throw error; }
+              const prompt = withDocuments(params.prompt, shown, at, docs);
+              const result = await tracedGenerate(ctx, model, { ...params, prompt, abortSignal: io.signal }, attempts, key);
+              return at >= 0 && docs !== (shown.get(at) ?? '') ? { ...result, promptDocs: { at, text: docs } satisfies ShownDocs } : result;
             });
             const { promptDocs: _, ...result } = output as typeof output & { promptDocs?: ShownDocs };
             return result;
@@ -167,6 +165,7 @@ export function aiSdkHarness({ model, tools = {}, promptDocs, ...settings }: AiS
 
   return {
     name: 'ai-sdk',
+    modelCalls: 'self',
     async drive(ctx) {
       for (let n = 0; ; n++) {
         const recorded = ctx.state().effects.get(`turn:${n}`)?.input as TurnInput | undefined;
@@ -220,6 +219,51 @@ function sameConversation(ctx: DriveContext, key: string, params: LanguageModelV
  * has streamed yet; the raw HTTP request and response bodies are left out
  * of the log.
  */
+/** `generate`, recorded as the model call of its step in Agent Runs (when `agentRuns()` is registered). */
+async function tracedGenerate(ctx: DriveContext, model: LanguageModelV4, params: LanguageModelV4CallOptions, attempts: number, key: string) {
+  const system = params.prompt.flatMap((m) => (m.role === 'system' ? [m.content] : []));
+  const traced = await ctx.tracing?.modelCall({
+    provider: model.provider,
+    modelId: model.modelId,
+    messages: params.prompt.filter((m) => m.role !== 'system'),
+    ...(system.length ? { instructions: system.join('\n\n') } : {}),
+    ...(params.tools ? { tools: params.tools } : {}),
+  });
+  try {
+    const result = await generate(ctx, model, params, attempts, key);
+    const usage = result.usage;
+    await traced?.model.complete({
+      outcome: 'completed',
+      result: {
+        finishReason: result.finishReason.unified,
+        usage: {
+          inputTokens: usage.inputTokens.total,
+          outputTokens: usage.outputTokens.total,
+          inputTokenDetails: { cacheReadTokens: usage.inputTokens.cacheRead, cacheWriteTokens: usage.inputTokens.cacheWrite },
+        },
+        ...(result.response.id ? { responseId: result.response.id } : {}),
+        ...(result.response.modelId ? { responseModelId: result.response.modelId } : {}),
+        content: modelContent(result.content.map((p) => (p.type === 'tool-call' ? { ...p, input: parseJson(p.input) } : p))),
+      },
+    });
+    const gatewayMeta = (result.providerMetadata?.gateway ?? {}) as Record<string, unknown>;
+    const usd = (v: unknown) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v));
+    traced?.attempt.attributes({ 'gen_ai.usage.cost': usd(gatewayMeta.cost), 'gen_ai.usage.gateway_cost': usd(gatewayMeta.gatewayCost) });
+    return result;
+  } catch (error) {
+    await traced?.model.fail(error);
+    throw error;
+  }
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 async function generate(ctx: DriveContext, model: LanguageModelV4, params: LanguageModelV4CallOptions, attempts: number, key: string) {
   for (let attempt = 1; ; attempt++) {
     const progress = { streamed: false };

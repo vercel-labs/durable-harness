@@ -21,6 +21,8 @@ minimumReleaseAgeExclude:
   - '@earendil-works/*'
   - '@ai-sdk/gateway@4.0.104'
   - ai@7.0.128
+  # Agent Runs tracing (vercel/eve#4910), published 2026-10-15.
+  - '@vercel/agent-runs@0.0.0'
 # Workflow SDK: the npm release of 2026-10-12 (workflow, @workflow/core and
 # @workflow/world-vercel 5.2.1, @workflow/world-local 5.1.1, @workflow/world,
 # @workflow/world-postgres, @workflow/next and @workflow/cli 5.0.4,
