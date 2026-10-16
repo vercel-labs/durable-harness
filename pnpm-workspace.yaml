@@ -58,6 +58,9 @@ catalog:
   '@workflow/world-vercel': 5.2.1
   'workflow': 5.2.1
 overrides:
+  # @workflow/core 5.2.1 pins these exactly, at versions with published advisories; the patched ones, until it moves.
+  'devalue@5.9.2': 5.9.4
+  'nanoid@5.1.6': 5.1.16
   '@workflow/astro': 'catalog:'
   '@workflow/builders': 'catalog:'
   '@workflow/cli': 'catalog:'
