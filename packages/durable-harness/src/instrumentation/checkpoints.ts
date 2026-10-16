@@ -14,6 +14,8 @@ interface Turn extends State {
   pending?: { value: TraceSnapshot | null };
   scheduled: boolean;
   storing: number;
+  /** A timeout does not cancel World writes: keep this entry quarantined until they settle. */
+  inFlight: number;
   unavailable?: unknown;
 }
 const CACHE_LIMIT = 128;
@@ -60,7 +62,7 @@ export class TraceStreams {
   forget(runId: string, turnId?: string): void {
     const only = turnId === undefined ? undefined : `turn:${encodeURIComponent(runId)}:${encodeURIComponent(turnId)}`;
     for (const [key, turn] of this.turns) {
-      if (turn.runId === runId && (only === undefined || key === only) && !turn.pending && turn.storing === 0) this.turns.delete(key);
+      if (turn.runId === runId && (only === undefined || key === only) && !turn.pending && turn.storing === 0 && turn.inFlight === 0) this.turns.delete(key);
     }
   }
 
@@ -72,7 +74,7 @@ export class TraceStreams {
   async nextSequence(runId: string): Promise<number> {
     const key = `sequence:${encodeURIComponent(runId)}`;
     let turn = this.turns.get(key);
-    if (turn && !turn.pending && turn.storing === 0) { this.turns.delete(key); turn = undefined; }
+    if (turn && !turn.pending && turn.storing === 0 && turn.inFlight === 0) { this.turns.delete(key); turn = undefined; }
     turn ??= this.cache(key, runId, `${runId}_agent-runs_sequence`);
     return (await this.increment(turn)) - 1;
   }
@@ -105,7 +107,7 @@ export class TraceStreams {
       try { await this.bounded(turn, () => writing); }
       catch { /* Checkpoints never keep a drive alive past its budget. */ }
     }));
-    for (const [key, turn] of this.turns) if (turn.finished && !turn.pending && turn.storing === 0) this.turns.delete(key);
+    for (const [key, turn] of this.turns) if (turn.finished && !turn.pending && turn.storing === 0 && turn.inFlight === 0) this.turns.delete(key);
   }
 
   private report(error: unknown): void {
@@ -145,11 +147,11 @@ export class TraceStreams {
   }
 
   private cache(key: string, runId: string, stream: string): Turn {
-    const turn: Turn = { runId, stream, drives: 0, finished: false, writing: Promise.resolve(), scheduled: false, storing: 0 };
+    const turn: Turn = { runId, stream, drives: 0, finished: false, writing: Promise.resolve(), scheduled: false, storing: 0, inFlight: 0 };
     this.turns.set(key, turn);
     for (const [oldKey, old] of this.turns) {
       if (this.turns.size <= CACHE_LIMIT) break;
-      if (old !== turn && old.storing === 0 && !old.pending) this.turns.delete(oldKey);
+      if (old !== turn && old.storing === 0 && old.inFlight === 0 && !old.pending) this.turns.delete(oldKey);
     }
     return turn;
   }
@@ -230,7 +232,11 @@ export class TraceStreams {
 
   private put(turn: Turn, value: TraceSnapshot | undefined, finished: boolean): Promise<void> {
     const line: Line = { version: 1, drive: turn.drives, ...(finished ? { v: null } : value === undefined ? {} : { v: value }) };
-    return this.bounded(turn, () => this.world.streams.write(turn.runId, turn.stream, new TextEncoder().encode(`${encodeLine(line)}\n`)));
+    return this.bounded(turn, async () => {
+      turn.inFlight++;
+      try { await this.world.streams.write(turn.runId, turn.stream, new TextEncoder().encode(`${encodeLine(line)}\n`)); }
+      finally { turn.inFlight--; }
+    });
   }
 
   private write(key: string, value: TraceSnapshot | null): void {

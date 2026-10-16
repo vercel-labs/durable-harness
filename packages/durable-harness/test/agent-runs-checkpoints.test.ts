@@ -23,6 +23,49 @@ function memoryWorld() {
 const snapshot = (value: string) => ({ value }) as unknown as TraceSnapshot;
 
 describe('Agent Runs checkpoint storage', () => {
+  it.each(['snapshot', 'delete', 'drive', 'sequence'] as const)('quarantines a timed-out %s write until the actual World write settles', async kind => {
+    vi.useFakeTimers();
+    const { world, streams, chunks } = memoryWorld();
+    const put = streams.write.bind(streams);
+    let release!: () => void;
+    let writing = false;
+    vi.spyOn(streams, 'write').mockImplementation(async (runId, name, data) => {
+      if (runId === 'slow' && !writing) {
+        writing = true;
+        await new Promise<void>(resolve => { release = resolve; });
+      }
+      await put(runId, name, data);
+    });
+    const writer = new TraceStreams(world, () => {}, 10);
+    let failed: Promise<unknown> | undefined;
+    if (kind === 'snapshot') writer.checkpointer.set('turn:slow:turn', snapshot('old'));
+    else if (kind === 'delete') writer.checkpointer.delete('turn:slow:turn');
+    else failed = expect(kind === 'drive' ? writer.nextDrive('slow', 'turn') : writer.nextSequence('slow')).rejects.toThrow('timed out');
+    const flushing = writer.flush('slow');
+    await vi.advanceTimersByTimeAsync(11);
+    await failed;
+    await flushing;
+    writer.forget('slow');
+    // Cache pressure and finished-entry pruning must not drop the outstanding write either.
+    for (let i = 0; i < 130; i++) await writer.checkpointer.get(`turn:other:${i}`);
+    await writer.flush();
+    await expect(kind === 'sequence' ? writer.nextSequence('slow') : writer.checkpointer.get('turn:slow:turn')).rejects.toThrow('timed out');
+    if (kind !== 'sequence') writer.checkpointer.set('turn:slow:turn', snapshot('must not race'));
+    await writer.flush('slow');
+    expect([...chunks.keys()].filter(name => name.startsWith('slow_'))).toEqual([]);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    writer.forget('slow');
+    if (kind === 'sequence') expect(await writer.nextSequence('slow')).toBe(1);
+    else {
+      expect(await writer.checkpointer.get('turn:slow:turn')).toEqual(kind === 'snapshot' ? snapshot('old') : undefined);
+      writer.checkpointer.set('turn:slow:turn', snapshot('latest'));
+      await writer.flush('slow');
+      const recovered = new TraceStreams(world, () => {});
+      expect(await recovered.checkpointer.get('turn:slow:turn')).toEqual(snapshot('latest'));
+    }
+  });
+
   it('keeps turn sequence numbers across workers without sharing a turn key', async () => {
     const { world } = memoryWorld();
     const first = new TraceStreams(world, () => {});

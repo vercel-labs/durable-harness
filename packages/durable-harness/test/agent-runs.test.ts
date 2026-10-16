@@ -61,6 +61,17 @@ async function idle(sessions: ReturnType<typeof durableSessions>, id: string, mo
 const of = (runId: string) => exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === runId);
 const parentOf = (span: ReadableSpan) => span.parentSpanContext?.spanId;
 
+async function finishedTurns(runId: string, count: number): Promise<ReadableSpan[]> {
+  // An effect's log commit precedes the drive's tracing finalizer.
+  for (let i = 0; i < 300; i++) {
+    await runs.forceFlush();
+    const spans = of(runId);
+    if (spans.filter(span => span.name.startsWith('invoke_agent')).length === count) return spans;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('timed out waiting for turn spans');
+}
+
 describe('Agent Runs with @vercel/agent-runs', () => {
   let first: { runId: string; spans: ReadableSpan[] };
   beforeAll(async () => {
@@ -70,9 +81,8 @@ describe('Agent Runs with @vercel/agent-runs', () => {
     await idle(sessions, sessionId, 2);
     await sessions.send(sessionId, 'again');
     await idle(sessions, sessionId, 4);
-    await runs.forceFlush();
     expect(harness.drives).toBeGreaterThan(1);
-    first = { runId: sessionId, spans: of(sessionId) };
+    first = { runId: sessionId, spans: await finishedTurns(sessionId, 2) };
     // Both turns finished, so their checkpoints were deleted.
     const state = await sessions.inspect(sessionId);
     for (const s of state.submissions.filter((x) => x.text !== undefined)) {
@@ -126,8 +136,7 @@ describe('Agent Runs with @vercel/agent-runs', () => {
     const { sessions } = await session(scripted());
     const { sessionId } = await sessions.start({ prompt: 'a secret', config: { traceAudience: 'private' } });
     await idle(sessions, sessionId, 2);
-    await runs.forceFlush();
-    const spans = of(sessionId);
+    const spans = await finishedTurns(sessionId, 1);
     expect(spans.map((s) => s.name)).toContain('execute_tool lookup');
     expect(JSON.stringify(spans.map((s) => s.attributes))).not.toContain('secret');
     const turn = spans.find((s) => s.name === 'invoke_agent scripted')!;
