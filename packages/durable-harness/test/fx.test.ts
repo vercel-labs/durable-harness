@@ -6,7 +6,7 @@ import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { readFxWorkspace } from 'harness-world-hands/fx';
 import { createFxAgent, memory } from 'libfx';
 import { world as fxWorld } from 'libfx/durable-world';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, expectTypeOf, it } from 'vitest';
 import { fxTools } from '../src/fx.ts';
 import { sandbox, virtual } from '../src/workspace.ts';
 
@@ -72,6 +72,8 @@ describe('fxTools()', () => {
     expect(onSandbox.map((t) => t.name)).toEqual(tools.map((t) => t.name));
     expect(onSandbox.every((t) => t.idempotent === false && (t as unknown as Record<symbol, unknown>)[Symbol.for('durable-harness.workspace-tool')] === true)).toBe(true);
     expect(onSandbox.find((t) => t.name === 'shell')!.description).toMatch(/in this session's own sandbox, a Linux VM/);
+    // Typed with their idempotent, as createFxAgent() requires of its tools (libfx's FxAgentHostTool).
+    expectTypeOf<ReturnType<typeof fxTools>[number]['idempotent']>().toEqualTypeOf<boolean>();
   });
 
   it('records in the durable-world World the agent uses, not in getWorld()', async () => {
