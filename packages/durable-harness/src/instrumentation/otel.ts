@@ -173,9 +173,13 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
                 attributes: { 'agent.channel.audience': given ?? audience, ...(title && decision.recordInputs ? { 'agent.session.title': title.slice(0, 160) } : {}) },
               });
             },
-            resume: (turnId) => {
+            async resume(turnId) {
               streams.forget(runId, turnId);
-              return run.resume({ identity: identity(turnId) });
+              if (!(await run.resume({ identity: identity(turnId) }))) return undefined;
+              // resume() restores the saved permissions; turn() narrows the whole tree to today's decision.
+              const turn = await run.turn({ identity: identity(turnId), sequence: 0, capture: decision });
+              turn.attributes({ 'agent.channel.audience': given ?? audience });
+              return turn;
             },
             async step(turn, turnId) {
               let numbered = steps.get(turnId);

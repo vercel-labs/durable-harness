@@ -53,7 +53,7 @@ export interface SessionTracingInput {
 export interface SessionTracing {
   /** The turn, started if this is its first operation, else continued where an earlier process left it. */
   turn(input: { readonly turnId: string; readonly sequence: number; readonly title?: string }): Promise<TurnOperation | undefined>;
-  /** A turn an earlier process started and has not finished, without starting one. */
+  /** A saved turn under the current capture policy, without starting one. */
   resume(turnId: string): Promise<TurnOperation | undefined>;
   /**
    * A new step of `turn`, for a model call: numbered in this process, its

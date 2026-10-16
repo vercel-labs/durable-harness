@@ -108,8 +108,12 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
   /** The turn's operation if this or an earlier drive started it and it is still open. */
   async function saved(turn: TurnTrace): Promise<TurnOperation | undefined> {
     if (turn.op) return turn.op;
-    const resumed = await run.resume({ identity: input(turn.submission).identity });
-    if (resumed) turn.op = Promise.resolve(resumed);
+    const data = input(turn.submission);
+    if (!(await run.resume({ identity: data.identity }))) return undefined;
+    // Re-enter before exposing restored children so recovery cannot retain an older, wider capture policy.
+    const resumed = await run.turn(data);
+    resumed.attributes({ 'agent.channel.audience': audience });
+    turn.op = Promise.resolve(resumed);
     return resumed;
   }
 
@@ -362,4 +366,3 @@ function canonical(args: unknown): string {
     : v;
   return JSON.stringify(sort(value)) ?? '';
 }
-
