@@ -103,10 +103,11 @@ export function foldItems(items: Item[], e: any): Item[] {
   }
   if (e.type === 'error' || e.type === 'failed') return [...items, { kind: 'error', text: String(e.message ?? 'error') }];
   // A turn a crash cut off resumed and its model answers again: a turn showing more text than the log kept (`e.parts`, one
-  // per kept step) ends in the cut-off reply, which goes.
+  // per kept step) ends in the cut-off reply, which goes. The turn starts at its message: a steer joins the turn it steers.
   if (e.type === 'restart') {
     const kept = Array.isArray(e.parts) ? e.parts.length : 0;
-    const shown = items.slice(items.findLastIndex((it) => it.kind === 'user') + 1).filter((it) => it.kind === 'text').length;
+    const start = items.findLastIndex((it) => it.kind === 'user' && !it.steer);
+    const shown = items.slice(start + 1).filter((it) => it.kind === 'text').length;
     return last?.kind === 'text' && shown > kept ? items.slice(0, -1) : items;
   }
   return items;

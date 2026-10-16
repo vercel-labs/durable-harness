@@ -39,6 +39,9 @@ describe('compare foldItems', () => {
     // A cut-off reply that repeats text the log kept before the tool still goes: the count, not the words, tells them apart.
     const repeat = fold([{ type: 'text', delta: 'Done.' }, { type: 'tool_start', name: 'mail' }, { type: 'tool_end', name: 'mail' }, { type: 'text', delta: 'Done.' }]);
     expect(foldItems(repeat, { type: 'restart', text: 'Done.', parts: ['Done.'] })).toEqual(repeat.slice(0, -1));
+    // A steer joins the turn it steers: the text the log kept before it counts.
+    const steered = [...fold([{ type: 'text', delta: 'Sending it.' }]), { kind: 'user', text: 'and cc me', steer: true } as Item, { kind: 'text', text: 'The email went' } as Item];
+    expect(foldItems(steered, { type: 'restart', text: 'Sending it.', parts: ['Sending it.'] })).toEqual(steered.slice(0, -1));
   });
   it('returns the same array for events that show nothing', () => {
     const items: Item[] = [];
