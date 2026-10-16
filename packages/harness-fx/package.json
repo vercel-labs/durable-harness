@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "harness-world": "workspace:*",
-    "@vercel/agent-runs": "0.0.0"
+    "@vercel/agent-runs": "0.0.1"
   },
   "peerDependencies": {
     "libfx": "catalog:"
