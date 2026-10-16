@@ -1,6 +1,6 @@
 {
   "name": "durable-harness",
-  "version": "0.0.1-beta.5",
+  "version": "0.0.1",
   "description": "Durable coding-agent harnesses (Claude Code, Codex, OpenCode, Pi) on a Workflow SDK World: the session is a run, its event log the source of truth, and a crash resumes the turn from the log on another machine.",
   "license": "Apache-2.0",
   "homepage": "https://vercel.com/docs/agent-harnesses",
