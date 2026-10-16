@@ -99,6 +99,39 @@ describe('Agent Runs from libfx hooks', () => {
   });
 });
 
+describe('Agent Runs from libfx hooks, turn after turn', () => {
+  it("records a turn that starts while the previous one's events are still being recorded", async () => {
+    const world = createWorld({ dataDir: await mkdtemp(join(tmpdir(), 'dh-fx-next-')), recoverActiveRuns: false });
+    worlds.push(world);
+    const hooks = agentRunsHooks({ world, name: 'fx-next' });
+    const session = 'wrun_01JZFXHOOKSNEXT00000000000';
+    const ev = (turnId: string, stepIndex: number) => (type: string, data: unknown): FxHookEvent =>
+      ({ version: 1, sessionId: session, rootSessionId: session, turnId, executionId: `exec_${turnId}`, stepIndex, timestamp: Date.now(), contentCaptured: true, contentTruncated: false, type, data }) as unknown as FxHookEvent;
+    const model = (turnId: string) => {
+      hooks.onEvent(ev(turnId, 1)('step.start', {}));
+      hooks.onEvent(ev(turnId, 1)('model.start', { modelCallId: 1, purpose: 'agent', model: 'test/model', messages: [user], tools: [] }));
+      hooks.onEvent(ev(turnId, 1)('model.end', { modelCallId: 1, error: null, cancelled: false, finishReason: 'stop', output: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 } }));
+      hooks.onEvent(ev(turnId, 1)('step.end', {}));
+    };
+    hooks.onEvent(ev('turn_a', 0)('turn.start', { resumed: false, input: 'first' }));
+    model('turn_a');
+    hooks.onEvent(ev('turn_a', 0)('turn.end', { outcome: 'completed', error: null }));
+    // The next turn starts before the first turn's end is recorded; its other events come after.
+    hooks.onEvent(ev('turn_b', 0)('turn.start', { resumed: false, input: 'second' }));
+    await hooks.flush();
+    model('turn_b');
+    hooks.onEvent(ev('turn_b', 0)('turn.end', { outcome: 'completed', error: null }));
+    await hooks.flush();
+    await runs.forceFlush();
+
+    const own = exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === session);
+    const turns = own.filter((s) => s.name === 'invoke_agent fx-next');
+    expect(turns.map((t) => [t.attributes['agent.turn.id'], t.attributes['agent.turn.outcome']]).sort()).toEqual([['turn_a', 'completed'], ['turn_b', 'completed']]);
+    const b = turns.find((t) => t.attributes['agent.turn.id'] === 'turn_b')!;
+    expect(own.filter((s) => s.name === 'agent.step' && s.parentSpanContext?.spanId === b.spanContext().spanId)).toHaveLength(1);
+  }, 30_000);
+});
+
 describe('Agent Runs from a real libfx durable agent', () => {
   it('records its turn, its model calls and the tool call their reply asked for', async () => {
     const { createFxAgent } = await import('libfx');

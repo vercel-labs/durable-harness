@@ -1,6 +1,6 @@
 import type { World } from '@workflow/world';
 import type { ApprovalOperation, AttemptOperation, ModelOperation, ToolOperation, TurnOperation } from '@vercel/agent-runs';
-import { agentRunsHook, type ContentPart, type ModelOptions, type SessionTracing, type TraceAudience } from 'harness-world/agent-runs';
+import { type AgentRunsHook, agentRunsHook, type ContentPart, type ModelOptions, type SessionTracing, type TraceAudience } from 'harness-world/agent-runs';
 import type { FxHookEvent, FxHooks } from 'libfx';
 
 type FxHookMessage = NonNullable<Extract<FxHookEvent, { type: 'model.start' }>['data']['messages']>[number];
@@ -33,8 +33,9 @@ interface TurnTrace {
 }
 
 interface SessionTrace {
-  readonly tracing: SessionTracing;
+  readonly tracing: Promise<SessionTracing | undefined>;
   turn?: TurnTrace;
+  /** Its events, recorded one at a time in order. */
   queue: Promise<void>;
 }
 
@@ -111,21 +112,19 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
   let pending: Promise<void> = Promise.resolve();
   const report = (error: unknown) => console.warn('[durable-harness] Agent Runs: an fx hook event was not recorded', error instanceof Error ? error.message : error);
 
-  async function sessionFor(id: string): Promise<SessionTrace | undefined> {
-    const hook = agentRunsHook();
-    if (!hook) return undefined;
+  /** The session's trace, found or made at once, so its events queue in the order they came. */
+  function sessionFor(id: string, hook: AgentRunsHook): SessionTrace {
     let session = sessions.get(id);
     if (!session) {
       world ??= options.world ? Promise.resolve(options.world) : import('./world.ts').then((m) => m.getWorld());
-      const tracing = hook.session({ world: await world, runId: id, agentName: options.name ?? 'fx', ...(options.audience ? { audience: options.audience } : {}) });
-      session = sessions.get(id) ?? { tracing, queue: Promise.resolve() };
+      const tracing = world.then((w) => hook.session({ world: w, runId: id, agentName: options.name ?? 'fx', ...(options.audience ? { audience: options.audience } : {}) }));
+      session = { tracing: tracing.catch((error: unknown) => (report(error), undefined)), queue: Promise.resolve() };
       sessions.set(id, session);
     }
     return session;
   }
 
-  async function record(session: SessionTrace, event: FxHookEvent): Promise<void> {
-    const { tracing } = session;
+  async function record(session: SessionTrace, tracing: SessionTracing, event: FxHookEvent): Promise<void> {
     if (event.type === 'turn.start' && event.turnId) {
       const e = event;
       // Each execution asks again: the library continues the turn from its checkpoint, which another process may have moved on.
@@ -223,8 +222,6 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
         if (outcome === 'completed' || outcome === 'cancelled') await op.complete({ outcome });
         else if (outcome === 'failed') await op.complete({ outcome, failed: true, error: new Error(e.data.error ?? 'the turn failed') });
         await tracing.flush();
-        // A finished turn leaves nothing to keep: the session's next turn starts afresh.
-        if (op.finished && sessions.get(event.sessionId) === session) sessions.delete(event.sessionId);
         return;
       }
     }
@@ -234,16 +231,21 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
     // The library records content only where the session's audience allows.
     captureContent: true,
     onEvent(event) {
-      const work = (async () => {
-        const session = await sessionFor(event.sessionId);
-        if (!session) return;
-        // libfx does not wait for a hook: each session's events are recorded one at a time, in order.
-        const next = session.queue.then(() => record(session, event)).catch(report);
-        session.queue = next;
-        await next;
-      })().catch(report);
-      pending = pending.then(() => work);
-      keepAlive(work);
+      const hook = agentRunsHook();
+      if (!hook) return;
+      const session = sessionFor(event.sessionId, hook);
+      // libfx does not wait for a hook: each session's events are recorded one at a time, in order.
+      const next: Promise<void> = session.queue
+        .then(async () => {
+          const tracing = await session.tracing;
+          if (tracing) await record(session, tracing, event);
+          // A finished turn with nothing queued behind it leaves nothing to keep: the session's next turn starts afresh.
+          if (session.queue === next && session.turn?.op?.finished && sessions.get(event.sessionId) === session) sessions.delete(event.sessionId);
+        })
+        .catch(report);
+      session.queue = next;
+      pending = pending.then(() => next);
+      keepAlive(next);
     },
     onError: report,
     async flush() {
@@ -252,7 +254,7 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
         await at;
         if (at === pending) break;
       }
-      await Promise.all([...sessions.values()].map((s) => s.tracing.flush()));
+      await Promise.all([...sessions.values()].map(async (s) => (await s.tracing)?.flush()));
     },
   };
 }
