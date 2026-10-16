@@ -203,6 +203,21 @@ describe('gatewayHandler: the body', () => {
     expect(gw.seen).toHaveLength(0);
   });
 
+  it("passes Claude Code 2.1.296's output_config (effort, format, task_budget), and refuses anything else in it", async () => {
+    const gw = await gateway();
+    const { h } = handler(gw.url);
+    const config = { effort: 'high', format: { type: 'json_schema', schema: { type: 'object' } }, task_budget: { type: 'tokens', total: 64_000 } };
+    await drain((await h(req('/v1/messages', messages({ output_config: config })), signal())).body);
+    await drain((await h(req('/v1/messages/count_tokens', { model: MODELS.model, messages: [{ role: 'user', content: 'hi' }], output_config: { effort: 'low' } }), signal())).body);
+    expect(JSON.parse(gw.seen[0]!.body).output_config).toEqual(config);
+    expect(JSON.parse(gw.seen[1]!.body).output_config).toEqual({ effort: 'low' });
+    await refused(h(req('/v1/messages', messages({ output_config: { effort: 'high', mcp_servers: [] } })), signal()), 'forbidden');
+    for (const output_config of ['high', { effort: 3 }, { format: 'json' }, { task_budget: 64_000 }]) {
+      await refused(h(req('/v1/messages', messages({ output_config })), signal()), 'bad_request');
+    }
+    expect(gw.seen).toHaveLength(2);
+  });
+
   it('refuses a tool type that is not a client tool, and a provider-hosted tool without the opt-in or with network deny-all', async () => {
     const gw = await gateway();
     const { h } = handler(gw.url);

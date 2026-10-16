@@ -97,6 +97,8 @@ async function invocation(
     builtins?: boolean;
     executable?: string;
     budget?: { turnUsd: number; sessionUsd: number };
+    /** The session's model (default `MODEL`). */
+    model?: string;
     /** Sees each machine the invocation's drives attach. */
     onAttach?: (machine: SessionMachine) => void;
   } = {}
@@ -121,7 +123,7 @@ async function invocation(
           }
         : sandbox,
       executable: opts.executable ?? executable!,
-      model: MODEL,
+      model: opts.model ?? MODEL,
       gatewayUrl: model.url,
       credential: async () => 'fake-gateway-credential',
       // The stand-in VM is this machine: no bubblewrap on macOS.
@@ -293,6 +295,19 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
   });
   afterAll(async () => {
     await model?.close();
+  });
+
+  it("a model that takes an effort (claude-sonnet-5-5): the CLI's output_config passes the gateway, and the turn completes", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hwcc-effort-'));
+    const api = platform();
+    script = () => ({ text: 'ok' });
+    const from = model.requests.length;
+    const inv = await invocation(dataDir, api, model, { model: 'claude-sonnet-5-5' });
+    const { sessionId } = await inv.sessions.start();
+    await inv.sessions.send(sessionId, 'Say ok.');
+    expect(turns(await waitTurns(inv.sessions, sessionId, 1))).toEqual([{ type: 'turn', status: 'completed' }]);
+    await inv.drained();
+    expect(model.messages().slice(from).find(main)?.body.output_config).toMatchObject({ effort: expect.any(String) });
   });
 
   it('R1: a file and a code word on VM A; VM A deleted, the Drive kept; VM B reads the file and recalls the word from the log', async () => {
@@ -480,7 +495,8 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
         expect(proxy.drop(path)).toBeGreaterThan(0);
         setTimeout(release, 300);
         const state = await waitTurns(a.sessions, sessionId, 1);
-        expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
+        (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
+    expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
         expect(state.effectOrder.some((e) => e.name === UNAVAILABLE_STEP)).toBe(false);
         expect(refused(from, model)).toEqual([]);
         expect(a.logs.some((l) => l.message === 'relay link lost')).toBe(true);
@@ -518,7 +534,8 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
       expect(proxy.drop('/model')).toBeGreaterThan(0);
       setTimeout(release, 300);
       const state = await waitTurns(a.sessions, sessionId, 1);
-      expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
+      (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
+    expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
       expect(a.logs.some((l) => l.message.includes('the drive is rebuilt from the log'))).toBe(true);
       // The Read's response before the drop, and the recovery's after it: both charged in the log the caps read.
       expect(journalRecords<{ usd: number }>(state, SPEND_STREAM).length).toBeGreaterThanOrEqual(2);
@@ -545,6 +562,7 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
     for (const pid of pids) process.kill(pid, 'SIGKILL');
     release();
     const state = await waitTurns(a.sessions, sessionId, 1);
+    (await import('node:fs')).writeFileSync(process.env.HOME + '/.local/state/durable-harness-release/docs-e2e/cli-effort-body.json', JSON.stringify(model.requests.slice(from).filter((r) => r.path.startsWith('/v1/messages')).map((r) => ({ path: r.path, status: r.status, body: r.body, headers: r.headers }))));
     expect(turns(state)).toEqual([{ type: 'turn', status: 'completed' }]);
     expect(refused(from, model)).toEqual([]);
     expect(a.failed).toEqual([]);

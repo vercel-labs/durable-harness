@@ -101,8 +101,10 @@ export function lastUserText(r: Pick<FakeRequest, 'messages'>): string {
 }
 
 /** Why `messages` breaks the Messages API's structure, or undefined when it doesn't. */
-export function structureProblem(messages: unknown): string | undefined {
-  if (!Array.isArray(messages) || messages.length === 0) return 'messages: at least one message is required';
+export function structureProblem(all: unknown): string | undefined {
+  if (!Array.isArray(all) || all.length === 0) return 'messages: at least one message is required';
+  // A system message after the first (Claude Code 2.1.296's environment note, to a model that takes an effort) is the API's own: the rest must still alternate.
+  const messages = all.filter((m, i) => !(i > 0 && (m as Message | undefined)?.role === ('system' as Message['role'])));
   const seenToolUse = new Set<string>();
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i] as Message;

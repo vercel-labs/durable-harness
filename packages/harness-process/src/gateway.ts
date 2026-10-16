@@ -357,8 +357,15 @@ export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
 ]);
 
 /** Top-level keys a Messages request may carry: no `mcp_servers`, `container`, `service_tier` or provider options. */
-const MESSAGES_KEYS = new Set(['model', 'messages', 'system', 'max_tokens', 'metadata', 'stop_sequences', 'stream', 'temperature', 'top_k', 'top_p', 'tools', 'tool_choice', 'thinking', 'context_management']);
-const COUNT_TOKENS_KEYS = new Set(['model', 'messages', 'system', 'tools', 'tool_choice', 'thinking', 'context_management']);
+const MESSAGES_KEYS = new Set(['model', 'messages', 'system', 'max_tokens', 'metadata', 'stop_sequences', 'stream', 'temperature', 'top_k', 'top_p', 'tools', 'tool_choice', 'thinking', 'context_management', 'output_config']);
+const COUNT_TOKENS_KEYS = new Set(['model', 'messages', 'system', 'tools', 'tool_choice', 'thinking', 'context_management', 'output_config']);
+/**
+ * What `output_config` may carry: the effort, a structured output's format
+ * and a task budget, as Claude Code 2.1.296 sends them (the effort on every
+ * request to a model that takes one). None makes the provider fetch or run
+ * anything.
+ */
+const OUTPUT_CONFIG_KEYS = new Set(['effort', 'format', 'task_budget']);
 /** Top-level keys a Responses request may carry. */
 const RESPONSES_KEYS = new Set(['model', 'instructions', 'input', 'tools', 'tool_choice', 'parallel_tool_calls', 'reasoning', 'store', 'stream', 'include', 'prompt_cache_key', 'text', 'max_output_tokens', 'temperature', 'top_p']);
 
@@ -446,9 +453,18 @@ function anthropicThinking(thinking: unknown, maxTokens: number): unknown {
   return { ...thinking, budget_tokens: maxTokens - 1 };
 }
 
+function anthropicOutputConfig(config: unknown): void {
+  if (config === undefined) return;
+  if (!isPlain(config)) throw refuse('bad_request', 'output_config must be an object');
+  onlyKeys(config, OUTPUT_CONFIG_KEYS, 'output_config');
+  if (config.effort !== undefined && typeof config.effort !== 'string') throw refuse('bad_request', 'output_config.effort must be a string');
+  for (const k of ['format', 'task_budget']) if (config[k] !== undefined && !isPlain(config[k])) throw refuse('bad_request', `output_config.${k} must be an object`);
+}
+
 /** Claude's `POST /v1/messages`. */
 export const anthropicMessages: BodyPolicy = (body, check) => {
   onlyKeys(body, MESSAGES_KEYS, 'messages');
+  anthropicOutputConfig(body.output_config);
   anthropicConversation(body, check);
   anthropicTools(body.tools, check);
   const max = check.clampTokens(body.max_tokens);
@@ -458,6 +474,7 @@ export const anthropicMessages: BodyPolicy = (body, check) => {
 /** Claude's `POST /v1/messages/count_tokens`. */
 export const anthropicCountTokens: BodyPolicy = (body, check) => {
   onlyKeys(body, COUNT_TOKENS_KEYS, 'count_tokens');
+  anthropicOutputConfig(body.output_config);
   anthropicConversation(body, check);
   anthropicTools(body.tools, check);
   return { ...body, model: check.model(body.model) };

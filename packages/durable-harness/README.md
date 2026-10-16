@@ -58,9 +58,14 @@ export const { GET, POST } = chatRoute({ open, agent, authorize: async (request)
 
 ```ts
 // next.config.ts
+import type { NextConfig } from 'next';
 import { withDurableHarness } from 'durable-harness/next';
 
-export default withDurableHarness({});
+const nextConfig: NextConfig = {
+  // your existing config
+};
+
+export default withDurableHarness(nextConfig);
 ```
 
 Choose your harness and framework in the

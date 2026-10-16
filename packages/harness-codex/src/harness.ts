@@ -450,7 +450,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       onCap: (cap) => {
         if (cap !== 'concurrency') capped = cap;
       },
-      log: (message, fields) => log(`codex gateway: ${message}`, fields),
+      // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
+      ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`codex gateway: ${message}`, fields) } : {}),
     });
     let machine: SessionMachine;
     try {

@@ -48,12 +48,27 @@ const SECRET_VALUE_SHAPES: readonly (readonly [string, RegExp])[] = [
 export const PLACEHOLDER_NAMES: ReadonlySet<string> = new Set<string>(['ANTHROPIC_AUTH_TOKEN', 'HARNESS_CODEX_GATEWAY_KEY']);
 
 /**
- * Names whose values are paths or fixed names the harness sets (never
- * secrets): the `process.env` equality rule skips them, so a host whose own
- * `PATH` or `HOME` happens to be the VM's, or whose `npm_package_name` is the
- * harness's client app name, isn't refused.
+ * Names whose values are paths, model ids or fixed names the harness sets
+ * (never secrets): the `process.env` equality rule skips them, so a host whose
+ * own `PATH` or `HOME` happens to be the VM's, whose `npm_package_name` is the
+ * harness's client app name, or that runs under Claude Code with the session's
+ * model in its own `ANTHROPIC_DEFAULT_*_MODEL`, isn't refused.
  */
-const HARNESS_NAMES: ReadonlySet<string> = new Set(['PATH', 'HOME', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_AGENT_SDK_CLIENT_APP']);
+const HARNESS_NAMES: ReadonlySet<string> = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'CLAUDE_CONFIG_DIR',
+  'CODEX_HOME',
+  'CLAUDE_AGENT_SDK_CLIENT_APP',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+]);
 
 const refuse = (key: string, why: string) => new TypeError(`harness-sandbox: spawn env ${JSON.stringify(key)} refused: ${why}`);
 

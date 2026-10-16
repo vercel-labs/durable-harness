@@ -436,7 +436,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         onCap: (cap) => {
           if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
         },
-        log: (message, fields) => log(`claude-code gateway: ${message}`, fields),
+        // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
+        ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-code gateway: ${message}`, fields) } : {}),
       });
 
       const abort = new AbortController();
@@ -783,6 +784,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             for (;;) {
               const end = await nextTurnEnd();
               transcript.endTurn(end);
+              // A failed turn (a refused or failed model call) says so on the live stream too, not only in the log.
+              if (end.status === 'failed') ctx.live({ type: 'error', message: end.error ?? 'the turn failed' });
               if (end.consumed) for (const u of end.consumed) outstanding.delete(u);
               else outstanding.clear();
               if (end.queued > 0 || outstanding.size > 0) continue;
