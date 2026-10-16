@@ -102,13 +102,29 @@ export function foldItems(items: Item[], e: any): Item[] {
     return i < 0 ? items : items.map((it, j) => (j === i && it.kind === 'tool' ? { ...it, done: true, error: !!e.isError } : it));
   }
   if (e.type === 'error' || e.type === 'failed') return [...items, { kind: 'error', text: String(e.message ?? 'error') }];
-  // A turn a crash cut off resumed and its model answers again: a turn showing more text than the log kept (`e.parts`, one
-  // per kept step) ends in the cut-off reply, which goes. The turn starts at its message: a steer joins the turn it steers.
+  // A turn a crash cut off resumed and its model answers again. The text the log kept (`e.parts`) streamed first, so what
+  // the turn shows past its length is the cut-off reply, at the end: that goes. Counted in characters, as a steer can
+  // split one reply into two rows. The turn starts at its message: a steer joins the turn it steers.
   if (e.type === 'restart') {
-    const kept = Array.isArray(e.parts) ? e.parts.length : 0;
+    const kept = Array.isArray(e.parts) ? e.parts.join('').length : 0;
     const start = items.findLastIndex((it) => it.kind === 'user' && !it.steer);
-    const shown = items.slice(start + 1).filter((it) => it.kind === 'text').length;
-    return last?.kind === 'text' && shown > kept ? items.slice(0, -1) : items;
+    let excess = items.slice(start + 1).reduce((n, it) => n + (it.kind === 'text' ? it.text.length : 0), 0) - kept;
+    if (excess <= 0) return items;
+    const out = [...items];
+    // The cut-off reply is the turn's last text, with steers in it: a tool call before it ended a kept step.
+    for (let i = out.length - 1; i > start && excess > 0; i--) {
+      const it = out[i]!;
+      if (it.kind === 'user' && it.steer) continue;
+      if (it.kind !== 'text') break;
+      if (it.text.length <= excess) {
+        excess -= it.text.length;
+        out.splice(i, 1);
+      } else {
+        out[i] = { kind: 'text', text: it.text.slice(0, it.text.length - excess) };
+        excess = 0;
+      }
+    }
+    return out;
   }
   return items;
 }

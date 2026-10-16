@@ -42,6 +42,12 @@ describe('compare foldItems', () => {
     // A steer joins the turn it steers: the text the log kept before it counts.
     const steered = [...fold([{ type: 'text', delta: 'Sending it.' }]), { kind: 'user', text: 'and cc me', steer: true } as Item, { kind: 'text', text: 'The email went' } as Item];
     expect(foldItems(steered, { type: 'restart', text: 'Sending it.', parts: ['Sending it.'] })).toEqual(steered.slice(0, -1));
+    // A steer mid-reply splits one kept reply into two rows: both stay.
+    const split = [...fold([{ type: 'text', delta: 'Sending' }]), { kind: 'user', text: 'and cc me', steer: true } as Item, { kind: 'text', text: ' it.' } as Item];
+    expect(foldItems(split, { type: 'restart', text: 'Sending it.', parts: ['Sending it.'] })).toBe(split);
+    // ...and a cut-off reply split by one goes as a whole, the steer kept.
+    const cut = [...fold([{ type: 'text', delta: 'Sending it.' }, { type: 'tool_start', name: 'mail' }, { type: 'tool_end', name: 'mail' }, { type: 'text', delta: 'The email' }]), { kind: 'user', text: 'and cc me', steer: true } as Item, { kind: 'text', text: ' went' } as Item];
+    expect(foldItems(cut, { type: 'restart', text: 'Sending it.', parts: ['Sending it.'] })).toEqual([...cut.slice(0, 3), cut[4]]);
   });
   it('returns the same array for events that show nothing', () => {
     const items: Item[] = [];
