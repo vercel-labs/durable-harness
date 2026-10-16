@@ -21,7 +21,7 @@ import fxCore from '../node_modules/libfx/fx-core.wasm';
 import { CONFIRM_MS, gatewayKey, INSTRUCTIONS, MODEL } from './model.ts';
 
 /** The installed libfx (package.json), recorded on every turn and checkpoint. */
-export const LIBFX_VERSION = '0.0.13-dev.1432.g1df91f0b4ebf';
+export const LIBFX_VERSION = '0.0.14';
 
 export function fxHarness() {
   return kernelFx({

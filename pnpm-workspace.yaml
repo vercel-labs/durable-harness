@@ -31,11 +31,10 @@ minimumReleaseAgeExclude:
 # overridden too, so one copy of each is installed (eve's and the CLI's
 # dependencies included).
 catalog:
-  # libfx with durability (vercel-labs/fx#1180), exactly. Only dev builds have
-  # it (the 0.0.13 stable has no durable.js); this is the newest (dist-tag dev,
-  # 2026-10-09). Every fx lane, the fx (libfx durable) harness, the CLI check
-  # and the examples use this one.
-  libfx: 0.0.13-dev.1432.g1df91f0b4ebf
+  # libfx, exactly: 0.0.14, the first stable with durability (libfx/durable-*),
+  # what `npm i libfx` installs. Every fx lane, the fx (libfx durable) harness,
+  # the CLI check and the examples use this one.
+  libfx: 0.0.14
   '@workflow/astro': 5.0.4
   '@workflow/builders': 5.0.4
   '@workflow/cli': 5.0.4

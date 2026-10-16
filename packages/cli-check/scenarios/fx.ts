@@ -7,7 +7,7 @@ import { createFxEngine } from 'libfx';
 import { KERNEL_EFFECTS, kernelSession, type Scenario, settled } from '../src/scenario.ts';
 
 /**
- * fx (harness-world-fx on libfx 0.0.13-dev.1432): the real libfx engine, its model
+ * fx (harness-world-fx on libfx 0.0.14): the real libfx engine, its model
  * requests answered by a scripted AI Gateway (`fetch`, SSE parts).
  */
 
@@ -56,7 +56,7 @@ const opaqueOk = (stepName: string, path: string) => stepName === 'checkpoint' &
 
 export const fx: Scenario = {
   name: 'fx',
-  title: 'fx (harness-world-fx, libfx 0.0.13-dev.1432)',
+  title: 'fx (harness-world-fx, libfx 0.0.14)',
   blocking: true,
   skip() {
     // libfx ships one native addon per platform; without it there is no fx here.

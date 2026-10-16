@@ -535,7 +535,8 @@ async function fxRig(on: VirtualWorkspace | Platform): Promise<Rig> {
     );
   };
   let app: AppTools | undefined;
-  const appTool = (name: 'hold' | 'vm_env') => ({ name, description: `The app's ${name}.`, inputSchema: { type: 'object', properties: {} }, execute: async (_: unknown, c: { sessionId: string }) => (name === 'hold' ? app!.hold() : app!.vmEnv(c.sessionId)) });
+  // Both only read: `hold` waits for the drill, `vm_env` lists the VM's environments.
+  const appTool = (name: 'hold' | 'vm_env') => ({ name, description: `The app's ${name}.`, inputSchema: { type: 'object', properties: {} }, idempotent: true, execute: async (_: unknown, c: { sessionId: string }) => (name === 'hold' ? app!.hold() : app!.vmEnv(c.sessionId)) });
   const host = hostname();
   const agent = createFxAgent({
     durability: fxWorld(world, { name: 'canary', livenessKnown: true, alive: () => true, holderInfo: () => ({ pid: process.pid, host }), pollMs: 50 }),
