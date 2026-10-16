@@ -33,7 +33,7 @@ export interface AgentRunsOptions {
 export interface AgentRuns {
   /** Start tracing this process's sessions. Call once per process, from the host's instrumentation hook. */
   register(): void;
-  /** Export what has ended and store every checkpoint. */
+  /** Export ended spans and settle bounded, best-effort checkpoint writes. */
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -115,7 +115,7 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   const { BasicTracerProvider, resourceFromAttributes, JsonTraceSerializer, AgentSpanIdGenerator, createAgentRun, otelTelemetry } = sdk;
   const onError: TraceErrorHandler = (error, at) => {
     try {
-      if (options.onError) options.onError(error, at);
+      if (options.onError) void Promise.resolve(options.onError(error, at)).catch(() => {});
       else console.warn(`[durable-harness] Agent Runs: ${at.phase} failed`, error instanceof Error ? error.message : error);
     } catch { /* Diagnostics must not fail agent work. */ }
   };

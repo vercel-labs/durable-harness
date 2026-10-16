@@ -90,7 +90,7 @@ export interface SessionTracing {
    * used), so no step of another process, before or after, is the same one.
    */
   step(turn: TurnOperation, turnId: string): Promise<AttemptOperation>;
-  /** Wait until every checkpoint this process wrote is stored. */
+  /** Wait for this session's queued checkpoint writes, within the tracing I/O budget. */
   flush(): Promise<void>;
 }
 
