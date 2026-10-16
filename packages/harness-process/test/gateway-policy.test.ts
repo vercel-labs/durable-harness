@@ -509,6 +509,17 @@ describe('gatewayHandler: headers', () => {
     expect(logs.some((l) => l.message.includes('anthropic-beta'))).toBe(true);
   });
 
+  it('logs a dropped anthropic-beta value once, not on every call', async () => {
+    const gw = await gateway();
+    const { h, logs } = handler(gw.url);
+    const call = (beta: string) => h(req('/v1/messages', messages(), { 'anthropic-beta': beta }), signal()).then((r) => drain(r.body));
+    await call('claude-code-20250219,mcp-client-2025-04-04');
+    await call('claude-code-20250219,mcp-client-2025-04-04');
+    await call('mcp-client-2025-04-04,files-api-2025-04-14');
+    const dropped = logs.filter((l) => l.message === 'dropped anthropic-beta values').map((l) => l.fields?.dropped);
+    expect(dropped).toEqual([['mcp-client-2025-04-04'], ['files-api-2025-04-14']]);
+  });
+
   it('passes only allowlisted response headers back', async () => {
     const gw = await gateway();
     const { h } = handler(gw.url);

@@ -922,6 +922,8 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
   const log = options.log ?? ((m: string, f?: Record<string, unknown>) => console.warn(`[gatewayHandler] ${m}`, f ?? {}));
   const doFetch = options.fetch ?? fetch;
   let inflight = 0;
+  /** The `anthropic-beta` values already logged as dropped: each is logged once per handler, not on every call. */
+  const droppedBetas = new Set<string>();
 
   const check: BodyCheck = {
     model(id) {
@@ -987,7 +989,10 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
         if (name === 'anthropic-beta') {
           const betas = v.split(',').map((b) => b.trim()).filter(Boolean);
           const kept = betas.filter((b) => route.betas?.has(b));
-          if (kept.length < betas.length) log('dropped anthropic-beta values', { dropped: betas.filter((b) => !route.betas?.has(b)).map((b) => b.slice(0, 64)) });
+          const dropped = betas.filter((b) => !route.betas?.has(b)).map((b) => b.slice(0, 64));
+          const fresh = dropped.filter((b) => !droppedBetas.has(b));
+          for (const b of fresh) droppedBetas.add(b);
+          if (fresh.length) log('dropped anthropic-beta values', { dropped: fresh });
           if (kept.length) headers.set(name, kept.join(','));
         } else headers.set(name, v);
       }
