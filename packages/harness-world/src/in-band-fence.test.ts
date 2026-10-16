@@ -923,13 +923,23 @@ for (const wc of WORLDS) {
       const driving = deliver(base, sessionId, { anchor: { k: 'msg', m: 'msg_d' } });
       await until(async () => ((await sessions.inspect(sessionId)).effectOrder.some((e) => e.name === 'model' && e.status === 'running') ? true : undefined));
       const stale = (await sessions.inspect(sessionId)).effectOrder.find((e) => e.name === 'model')!;
-      // Another drive writes in-band at the same epoch (here: a step of its own, opened and closed).
-      const other = new SessionLog(world, sessionId);
-      await other.refresh();
-      expect(other.arm('drv_other')).toBe(true);
-      const step = `step_${ulid()}`;
-      await other.write({ eventType: 'step_started', correlationId: step, eventData: { stepName: stepNameFor('tool.x'), input: encode({ key: 'other', replay: 'safe', input: null, epoch: 0, drv: 'drv_other', anchor: { k: 'msg', m: 'msg_other' } } satisfies StepEnvelope) } });
-      await other.write({ eventType: 'step_completed', correlationId: step, eventData: { stepName: stepNameFor('tool.x'), result: encode('done') } });
+      // Another drive writes in-band at the same epoch (here: a step of its own, opened and closed). The drive can still land an
+      // in-band write of its own after the fold shows its step running; a refusal of this stand-in's first write then means it
+      // read too early, so it reads again (a fresh log: a refused one stays refused).
+      for (let attempt = 1; ; attempt++) {
+        const other = new SessionLog(world, sessionId);
+        await other.refresh();
+        expect(other.arm('drv_other')).toBe(true);
+        const step = `step_${ulid()}`;
+        try {
+          await other.write({ eventType: 'step_started', correlationId: step, eventData: { stepName: stepNameFor('tool.x'), input: encode({ key: 'other', replay: 'safe', input: null, epoch: 0, drv: 'drv_other', anchor: { k: 'msg', m: 'msg_other' } } satisfies StepEnvelope) } });
+        } catch (err) {
+          if (attempt < 5 && err instanceof LogSuperseded) continue;
+          throw err;
+        }
+        await other.write({ eventType: 'step_completed', correlationId: step, eventData: { stepName: stepNameFor('tool.x'), result: encode('done') } });
+        break;
+      }
       const before = (await allEvents(world, sessionId)).length;
       release();
       await driving;
