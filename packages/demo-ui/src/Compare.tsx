@@ -102,6 +102,12 @@ export function foldItems(items: Item[], e: any): Item[] {
     return i < 0 ? items : items.map((it, j) => (j === i && it.kind === 'tool' ? { ...it, done: true, error: !!e.isError } : it));
   }
   if (e.type === 'error' || e.type === 'failed') return [...items, { kind: 'error', text: String(e.message ?? 'error') }];
+  // A turn a crash cut off resumed and its model answers again: the text streamed since the last tool call is the cut-off
+  // reply, unless the log kept it (`e.text` is what it kept of the turn).
+  if (e.type === 'restart') {
+    const kept = typeof e.text === 'string' ? e.text : '';
+    return last?.kind === 'text' && !kept.endsWith(last.text) ? items.slice(0, -1) : items;
+  }
   return items;
 }
 

@@ -388,6 +388,9 @@ export function useSession(client: DemoClient | undefined, id: string | undefine
       // Run-ahead: speculative output the log does not have is retracted
       // (a rejected write rewinds the drive; it streams the turn again).
       if (event?.type === 'rewind' || event?.type === 'submit-failed') live.reset();
+      // A turn a crash cut off resumed and its model answers again: the cut-off text never reached the log, so it goes; what
+      // the log kept shows from the next read, and the resumed reply streams after it.
+      if (event?.type === 'restart') live.reset();
       if (event?.type === 'submit-failed') {
         put({ error: `A prompt did not become durable yet (${String(event.error ?? 'write failed')}); the drive re-issues it.` });
       }

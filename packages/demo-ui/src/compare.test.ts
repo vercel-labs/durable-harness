@@ -21,6 +21,22 @@ describe('compare foldItems', () => {
       { kind: 'text', text: 'done' },
     ]);
   });
+  it('drops the cut-off reply on restart, and keeps text the log kept', () => {
+    const fold = (events: object[]) => events.reduce<Item[]>((items, e) => foldItems(items, e), [{ kind: 'user', text: 'hi' }]);
+    const before = [{ type: 'text', delta: 'Sending it.' }, { type: 'tool_start', name: 'mail' }, { type: 'tool_end', name: 'mail' }, { type: 'text', delta: 'The email went' }];
+    expect(fold([...before, { type: 'restart', text: 'Sending it.' }, { type: 'text', delta: 'Done.' }])).toEqual([
+      { kind: 'user', text: 'hi' },
+      { kind: 'text', text: 'Sending it.' },
+      { kind: 'tool', name: 'mail', done: true, error: false },
+      { kind: 'text', text: 'Done.' },
+    ]);
+    // A crash mid-tool: nothing streamed was cut off.
+    const midTool = fold([{ type: 'text', delta: 'Sending it.' }, { type: 'tool_start', name: 'mail' }]);
+    expect(foldItems(midTool, { type: 'restart', text: 'Sending it.' })).toBe(midTool);
+    // A reply the log kept whole stays.
+    const kept = fold([{ type: 'text', delta: 'All done.' }]);
+    expect(foldItems(kept, { type: 'restart', text: 'All done.' })).toBe(kept);
+  });
   it('returns the same array for events that show nothing', () => {
     const items: Item[] = [];
     expect(foldItems(items, { type: 'mark', name: 'idle' })).toBe(items);
