@@ -38,6 +38,8 @@ interface Step {
   readonly asked: { id: string; name: string; args: string }[];
   /** Model calls still running: a step another one starts beside is not ended under them. */
   running: number;
+  /** Its tool calls not settled, a parked one among them: ending the step would close them. */
+  open: number;
 }
 
 interface TurnTrace {
@@ -111,15 +113,16 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     return resumed;
   }
 
-  async function endSteps(turn: TurnTrace, error?: unknown, all = true): Promise<void> {
-    const ending = all ? turn.steps : turn.steps.filter((s) => s.running === 0);
+  async function endSteps(turn: TurnTrace, error?: unknown, which: (step: Step) => boolean = () => true): Promise<void> {
+    const ending = turn.steps.filter(which);
     turn.steps = turn.steps.filter((s) => !ending.includes(s));
     for (const step of ending) await (error === undefined ? step.op.complete() : step.op.fail(error));
   }
 
   async function endTurn(turn: TurnTrace, outcome: 'completed' | 'failed' | 'cancelled' | 'running', error?: unknown): Promise<void> {
     const op = await saved(turn);
-    await endSteps(turn, outcome === 'failed' || outcome === 'running' ? error : undefined);
+    // A turn that goes on keeps the steps of its open tool calls: the drive that settles one finds it in them.
+    await endSteps(turn, outcome === 'failed' || outcome === 'running' ? error : undefined, outcome === 'running' ? (s) => s.open === 0 : undefined);
     if (!op || outcome === 'running') return;
     if (outcome === 'failed') await op.complete({ outcome, failed: true, error, ...(error instanceof Error ? { errorType: error.name } : {}) });
     else await op.complete({ outcome });
@@ -137,15 +140,19 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
   async function newStep(turn: TurnTrace, at: { stepIndex: number; attempt: number }): Promise<Step | undefined> {
     const op = await started(turn);
     if (!op || op.finished) return undefined;
-    await endSteps(turn, undefined, false);
-    const step: Step = { op: await op.attempt(at), asked: [], running: 0 };
+    await endSteps(turn, undefined, (s) => s.running === 0 && s.open === 0);
+    const step: Step = { op: await op.attempt(at), asked: [], running: 0, open: 0 };
     turn.steps.push(step);
     return step;
   }
 
   /** A step for a model call made outside a `model` effect (a CLI's request through the Gateway proxy). */
   async function requestStep(turn: TurnTrace): Promise<Step | undefined> {
-    turn.drive ??= streams.nextDrive(ctx.runId, turn.submission.id);
+    if (!turn.drive) {
+      const drive = (turn.drive = streams.nextDrive(ctx.runId, turn.submission.id));
+      // Not recorded: a later step asks again.
+      drive.catch(() => turn.drive === drive && (turn.drive = undefined));
+    }
     return newStep(turn, { stepIndex: turn.requests++, attempt: await turn.drive });
   }
 
@@ -196,24 +203,40 @@ export async function traceDrive(options: DriveTracerOptions, harness: Harness, 
     return fromKey ?? key;
   }
 
-  async function traceTool<T>(key: string, effect: EffectOptions, execute: () => Promise<T>): Promise<T> {
+  /** The tool call's operation: one an earlier drive started, else a new one under the step that asked for it. */
+  async function openTool(key: string, effect: EffectOptions): Promise<{ tool: ToolOperation; step?: Step } | undefined> {
     const turn = current;
     const op = turn && (await started(turn));
-    if (!turn || !op || op.finished) return execute();
+    if (!turn || !op || op.finished) return undefined;
     const name = effect.name.slice('tool.'.length);
     const callId = callIdOf(turn, key, name, effect.input);
-    const tool: ToolOperation | undefined =
-      op.findTool(callId) ?? (await (turn.steps.at(-1) ?? (await requestStep(turn)))?.op.tool({ callId, name, arguments: effect.input }));
-    if (!tool) return execute();
+    const found = op.findTool(callId);
+    if (found) return { tool: found };
+    const step = turn.steps.at(-1) ?? (await requestStep(turn));
+    const tool = await step?.op.tool({ callId, name, arguments: effect.input });
+    return tool && { tool, step };
+  }
+
+  async function traceTool<T>(key: string, effect: EffectOptions, execute: () => Promise<T>): Promise<T> {
+    // Tracing never fails a tool call: one it cannot record runs untraced.
+    const traced = await openTool(key, effect).catch(() => undefined);
+    if (!traced) return execute();
+    const { tool, step } = traced;
+    if (step) step.open++;
+    let value: T;
     try {
-      const value = await tool.run(execute);
-      await tool.complete({ outcome: 'completed', output: value });
-      return value;
+      value = await tool.run(execute);
     } catch (error) {
       // A call the drive stopped under, or handed off, goes on in a later drive: its span stays open for it.
-      if (!(error instanceof Parked) && !ctx.signal.aborted) await tool.fail(error);
+      if (!(error instanceof Parked) && !ctx.signal.aborted) {
+        if (step) step.open--;
+        await tool.fail(error).catch(() => {});
+      }
       throw error;
     }
+    if (step) step.open--;
+    await tool.complete({ outcome: 'completed', output: value }).catch(() => {});
+    return value;
   }
 
   /** A tool call an earlier drive started, which the kernel settled without running it again (interrupted, or parked work collected). */

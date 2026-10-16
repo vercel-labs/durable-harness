@@ -17,6 +17,8 @@ interface Turn {
   drives: number;
   /** The newest value not yet written. */
   pending?: { value: TraceSnapshot | null };
+  /** Writes of it being stored. */
+  storing: number;
 }
 
 /**
@@ -66,9 +68,16 @@ export class TraceStreams {
     delete: (key) => this.write(key, null),
   };
 
-  /** A drive of `runId` starts: what this process remembers of its turns may be older than another process's writes. */
-  forget(runId: string): void {
-    for (const [key, turn] of this.turns) if (turn.runId === runId && !turn.pending) this.turns.delete(key);
+  /**
+   * A drive of `runId` (or a turn of it) starts: what this process remembers
+   * of its turns may be older than another process's writes. A turn this
+   * process is still writing is kept: its stream does not have that yet.
+   */
+  forget(runId: string, turnId?: string): void {
+    const only = turnId === undefined ? undefined : `turn:${encodeURIComponent(runId)}:${encodeURIComponent(turnId)}`;
+    for (const [key, turn] of this.turns) {
+      if (turn.runId === runId && (only === undefined || key === only) && !turn.pending && turn.storing === 0) this.turns.delete(key);
+    }
   }
 
   /**
@@ -80,7 +89,12 @@ export class TraceStreams {
     const turn = this.turn(`turn:${encodeURIComponent(runId)}:${encodeURIComponent(turnId)}`)!;
     await this.load(turn);
     const drive = ++turn.drives;
-    await this.world.streams.write(runId, turn.stream, new TextEncoder().encode(`${encodeLine({ drive } satisfies Line)}\n`));
+    turn.storing++;
+    try {
+      await this.world.streams.write(runId, turn.stream, new TextEncoder().encode(`${encodeLine({ drive } satisfies Line)}\n`));
+    } finally {
+      turn.storing--;
+    }
     return drive;
   }
 
@@ -105,7 +119,7 @@ export class TraceStreams {
     if (turn) return turn;
     const parsed = parseKey(key);
     if (!parsed) return undefined;
-    turn = { runId: parsed.runId, stream: checkpointStreamName(parsed.runId, parsed.turnId), drives: 0, finished: false };
+    turn = { runId: parsed.runId, stream: checkpointStreamName(parsed.runId, parsed.turnId), drives: 0, finished: false, storing: 0 };
     this.turns.set(key, turn);
     return turn;
   }
@@ -152,10 +166,13 @@ export class TraceStreams {
         const pending = next.pending;
         if (!pending) continue;
         next.pending = undefined;
+        next.storing++;
         try {
           await this.world.streams.write(next.runId, next.stream, new TextEncoder().encode(`${encodeLine({ v: pending.value } satisfies Line)}\n`));
         } catch (error) {
           this.onError(error);
+        } finally {
+          next.storing--;
         }
       }
     });

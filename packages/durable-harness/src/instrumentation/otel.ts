@@ -123,8 +123,6 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   let provider: BasicTracerProvider | undefined;
   const worlds = new WeakMap<World, { run: AgentRun; streams: TraceStreams }>();
   const live = new Set<TraceStreams>();
-  /** Steps of turns not driven by the kernel: this process's number for the turn, and its next step. */
-  const steps = new Map<string, { drive: Promise<number>; next: number }>();
 
   return {
     register() {
@@ -157,8 +155,13 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
           const { run, streams } = forWorld(world);
           const decision = capture(given ?? audience);
           const identity = (turnId: string) => ({ conversationId: runId, runId, turnId });
+          // Another process may have moved the session's turns on since this one last had it.
+          streams.forget(runId);
+          /** Steps of its turns: this session's number for the turn, and its next step. */
+          const steps = new Map<string, { drive: Promise<number>; next: number }>();
           return {
             async turn({ turnId, sequence, title }) {
+              streams.forget(runId, turnId);
               if (await streams.finished(runId, turnId)) return undefined;
               return run.turn({
                 identity: identity(turnId),
@@ -170,10 +173,17 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
                 attributes: { 'agent.channel.audience': given ?? audience, ...(title && decision.recordInputs ? { 'agent.session.title': title.slice(0, 160) } : {}) },
               });
             },
-            resume: (turnId) => run.resume({ identity: identity(turnId) }),
+            resume: (turnId) => {
+              streams.forget(runId, turnId);
+              return run.resume({ identity: identity(turnId) });
+            },
             async step(turn, turnId) {
-              let numbered = steps.get(`${runId}:${turnId}`);
-              if (!numbered) steps.set(`${runId}:${turnId}`, (numbered = { drive: streams.nextDrive(runId, turnId), next: 0 }));
+              let numbered = steps.get(turnId);
+              if (!numbered) {
+                const entry = (numbered = { drive: streams.nextDrive(runId, turnId), next: 0 });
+                steps.set(turnId, entry);
+                entry.drive.catch(() => steps.get(turnId) === entry && steps.delete(turnId));
+              }
               const stepIndex = numbered.next++;
               return turn.attempt({ stepIndex, attempt: await numbered.drive });
             },
