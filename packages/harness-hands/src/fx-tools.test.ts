@@ -114,8 +114,8 @@ describe('vendored from fx', () => {
   it("pins libfx's own build of the source commit", () => {
     const pkg = JSON.parse(readFileSync(join(libfxDir, 'package.json'), 'utf8')) as { version: string };
     expect(pkg.version).toBe(FX_SOURCE.libfx);
-    // The dev build's version names the commit it is built from.
-    expect(FX_SOURCE.commit.startsWith(FX_SOURCE.libfx.split('.g').at(-1)!)).toBe(true);
+    // A dev build's version names the commit it is built from (a release's is its tag's).
+    if (FX_SOURCE.libfx.includes('-dev.')) expect(FX_SOURCE.commit.startsWith(FX_SOURCE.libfx.split('.g').at(-1)!)).toBe(true);
     expect(FX_TOOL_DEFS.map((d) => d.name)).toEqual([...FX_TOOL_NAMES]);
   });
 

@@ -7,8 +7,8 @@ settings:
 catalogs:
   default:
     libfx:
-      specifier: 0.0.13-dev.1432.g1df91f0b4ebf
-      version: 0.0.13-dev.1432.g1df91f0b4ebf
+      specifier: 0.0.14
+      version: 0.0.14
 
 overrides:
   '@workflow/astro': 5.0.4
@@ -112,7 +112,7 @@ importers:
         version: link:../../packages/world-remote
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       react:
         specifier: 19.3.0
         version: 19.3.0
@@ -173,7 +173,7 @@ importers:
         version: link:../../packages/harness-pi
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       pi-world:
         specifier: workspace:*
         version: link:../../packages/pi-world
@@ -306,7 +306,7 @@ importers:
         version: 3.4.2(supports-color@10.2.2)
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       next:
         specifier: 16.3.6
         version: 16.3.6(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -370,7 +370,7 @@ importers:
         version: link:../../packages/durable-harness
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       next:
         specifier: 16.3.6
         version: 16.3.6(@opentelemetry/api@1.9.1)(@types/node@22.20.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -446,7 +446,7 @@ importers:
         version: link:../harness-sandbox
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       pi-world:
         specifier: workspace:*
         version: link:../pi-world
@@ -617,7 +617,7 @@ importers:
         version: 3.4.2(supports-color@10.2.2)
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
       next:
         specifier: 16.3.6
         version: 16.3.6(@opentelemetry/api@1.9.0)(@types/node@22.20.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -704,7 +704,7 @@ importers:
         version: 5.1.1(@opentelemetry/api@1.9.1)
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
 
   packages/harness-hands:
     dependencies:
@@ -738,7 +738,7 @@ importers:
         version: link:../harness-pi
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
 
   packages/harness-opencode:
     dependencies:
@@ -787,7 +787,7 @@ importers:
         version: link:../harness-hands
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
 
   packages/harness-pi:
     dependencies:
@@ -912,7 +912,7 @@ importers:
         version: 5.1.1(@opentelemetry/api@1.9.1)
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
 
   packages/pi-world:
     dependencies:
@@ -982,7 +982,7 @@ importers:
         version: link:../world-remote
       libfx:
         specifier: 'catalog:'
-        version: 0.0.13-dev.1432.g1df91f0b4ebf
+        version: 0.0.14
     devDependencies:
       '@workflow/world-local':
         specifier: 5.1.1
@@ -5150,8 +5150,8 @@ packages:
   launch-editor@2.14.2:
     resolution: {integrity: sha512-NHJEb30MGBCkmZXLZwz25t37QR4aY03ZzPYUJXOJaOa92uWwExI9SBQUuIznBYc1xkD7cJNGX7oc3Nl3sq2kQQ==}
 
-  libfx@0.0.13-dev.1432.g1df91f0b4ebf:
-    resolution: {integrity: sha512-NH3xjU73NyylX81XlkP1sPek+TST+7QyA7mDldwhmvi5HKkpZHjusqWouKhTQVJOuBrz8QssCcSCGj3okOUkHw==}
+  libfx@0.0.14:
+    resolution: {integrity: sha512-8wIEkRlKuQnbueyt6NBwi4xEiEnoRpwvAocKolzzmyz/r14s4gXiE3XivGk4QJpNnMMGHAJRKlH0WhW//q7B5Q==}
     engines: {node: '>=20'}
 
   lightningcss-android-arm64@1.33.0:
@@ -12528,7 +12528,7 @@ snapshots:
       picocolors: 1.1.1
       shell-quote: 1.12.0
 
-  libfx@0.0.13-dev.1432.g1df91f0b4ebf: {}
+  libfx@0.0.14: {}
 
   lightningcss-android-arm64@1.33.0:
     optional: true

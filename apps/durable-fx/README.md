@@ -8,12 +8,11 @@ redeploy from its last record. No adapter, no Workflow package to install:
 libfx carries the Worlds it needs.
 
 ```sh
-npm install libfx@0.0.13-dev.1432.g1df91f0b4ebf durable-harness just-bash
+npm install libfx durable-harness just-bash
 ```
 
-Pin it exactly: durability is only in libfx's dev builds after
-vercel-labs/fx#1180, and every `0.0.13-dev.*` sorts below `0.0.13`, which
-has none (in this repo the pin is the pnpm catalog entry). `durable-harness`
+libfx is durable from 0.0.14 (in this repo the pin is the pnpm catalog
+entry). `durable-harness`
 gives the agent its workspace tools (`durable-harness/fx`, on `just-bash`) and
 `next.config.ts` its `withDurableHarness`, which writes the route libfx's
 queue delivers to ([below](#nextconfigts)); an app without Next.js mounts that

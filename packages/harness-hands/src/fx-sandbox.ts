@@ -80,9 +80,9 @@ export type FxAcquire<Record extends FxMachineRecord> = (request: FxAcquireReque
 /** The name of a session's sandbox record stream (in its run). */
 export const fxSandboxStreamName = (sessionId: string) => `${sessionId}_fxsbx`;
 
-/** What a call answers when libfx's log holds no intent for it (it was not called by libfx's agent, or by an agent on another World). */
+/** What a call answers when libfx's log holds no open intent for it (it was not called by libfx's agent, or by an agent on another World, or its result is stored). */
 export const FX_NO_INTENT =
-  "not run: libfx's log for this session holds no intent for this call, so it can't tell which worker runs it (fxTools(sandbox()) is for libfx's createFxAgent, with { world } the World its sessions live in)";
+  "not run: libfx's log for this session holds no open intent for this call, so it can't tell which worker runs it (fxTools(sandbox()) is for libfx's createFxAgent, with { world } the World its sessions live in)";
 
 /** What a call answers when its worker no longer holds the session: nothing ran, and libfx stores nothing more for that worker. */
 export const FX_SUPERSEDED = 'not run: another server took this session over, so this one runs nothing more in its sandbox';
@@ -486,7 +486,8 @@ export class FxSandbox<Record extends FxMachineRecord> {
       }
     }
     const state = await log.refresh(world, sessionId);
-    const owner = state.intents.get(context.executionId);
+    // An intent is open until libfx stores its result: a checkpoint need not have covered it yet.
+    const owner = state.results.has(context.executionId) ? undefined : state.intents.get(context.executionId);
     if (!owner) return { text: FX_NO_INTENT, isError: true };
     let tenure = this.tenures.get(sessionId);
     if (tenure && tenure.owner.holder !== owner.holder) {
