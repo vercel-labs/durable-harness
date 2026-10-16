@@ -17,23 +17,32 @@ export interface FxAgentRunsOptions {
 
 /** libfx's `FxHooks`, for `createFxAgent({ hooks })`. */
 export interface FxAgentRunsHooks extends FxHooks {
+  /** Whether libfx passes the hooks content: if the audience records any, or `true` while `agentRuns()` isn't registered yet. */
   readonly captureContent: boolean;
   /** Settles once every event so far is recorded and its turn's checkpoint stored. */
   flush(): Promise<void>;
 }
 
-/** One turn of a session as its events arrive: its operation and what is open in it. */
+/** One turn of a session as one execution's events arrive: its operation and what is open in it. */
 interface TurnTrace {
   readonly id: string;
+  /** The execution running it. Another's events (one this process ran before a takeover) are not this turn's. */
+  readonly execution: string | null;
   readonly op: TurnOperation | undefined;
-  readonly steps: Map<string, AttemptOperation>;
-  readonly models: Map<string, { op: ModelOperation; own?: AttemptOperation }>;
+  /** Another worker's write fenced this execution's journal out: its end is not the turn's. */
+  fenced: boolean;
+  /** By step and model call: both are numbered within the execution. */
+  readonly steps: Map<number, AttemptOperation>;
+  readonly models: Map<number, { op: ModelOperation; own?: AttemptOperation }>;
   readonly tools: Map<string, ToolOperation>;
+  /** Tool calls that ended cancelled, settled by the turn's end: a handoff leaves them open for the execution that runs them again. */
+  readonly cancelled: Map<string, ToolOperation>;
   readonly waits: Map<string, ApprovalOperation>;
 }
 
 interface SessionTrace {
   readonly tracing: Promise<SessionTracing | undefined>;
+  /** The turn an execution is running, until its end. */
   turn?: TurnTrace;
   /** Its events, recorded one at a time in order. */
   queue: Promise<void>;
@@ -101,68 +110,110 @@ function keepAlive(work: Promise<unknown>): void {
  *
  * Each libfx turn is a turn, each step of it a step with its model call, and
  * the tool calls (and the approvals they wait on) are under the step. A turn
- * that libfx yields, pauses or hands to another worker stays open: the
+ * that libfx yields, pauses, hands to another worker (at its deadline, or
+ * when it lost its lease) or that another worker fenced out stays open: the
  * execution that resumes it (in any process) continues the same turn from
- * its checkpoint, its steps numbered by that execution. Nothing is recorded
- * until `agentRuns()` is registered.
+ * its checkpoint, its steps numbered by that execution, and a call the
+ * handoff cut off runs again as the same call. Nothing is recorded until
+ * `agentRuns()` is registered.
+ *
+ * libfx doesn't wait for its hooks, so a turn is recorded just after it
+ * runs: an execution that resumes it at once elsewhere may read its
+ * checkpoint before this process stores the last of it.
  */
 export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHooks {
   const sessions = new Map<string, SessionTrace>();
   let world: Promise<World> | undefined;
   let pending: Promise<void> = Promise.resolve();
-  const report = (error: unknown) => console.warn('[durable-harness] Agent Runs: an fx hook event was not recorded', error instanceof Error ? error.message : error);
+  const report = (error: unknown, phase: 'start' | 'complete' = 'complete') => {
+    const hook = agentRunsHook();
+    if (hook) hook.onError(error, { phase });
+    else console.warn('[durable-harness] Agent Runs: an fx hook event was not recorded', error instanceof Error ? error.message : error);
+  };
 
-  /** The session's trace, found or made at once, so its events queue in the order they came. */
-  function sessionFor(id: string, hook: AgentRunsHook): SessionTrace {
-    let session = sessions.get(id);
-    if (!session) {
-      world ??= options.world ? Promise.resolve(options.world) : import('./world.ts').then((m) => m.getWorld());
-      const tracing = world.then((w) => hook.session({ world: w, runId: id, agentName: options.name ?? 'fx', ...(options.audience ? { audience: options.audience } : {}) }));
-      session = { tracing: tracing.catch((error: unknown) => (report(error), undefined)), queue: Promise.resolve() };
-      sessions.set(id, session);
-    }
+  /** A session's trace, made at once on its turn's start, so its events queue in the order they came. */
+  function open(id: string, hook: AgentRunsHook): SessionTrace {
+    world ??= options.world ? Promise.resolve(options.world) : import('./world.ts').then((m) => m.getWorld());
+    const tracing = world.then((w) => hook.session({ world: w, runId: id, agentName: options.name ?? 'fx', ...(options.audience ? { audience: options.audience } : {}) }));
+    const session: SessionTrace = { tracing: tracing.catch((error: unknown) => (report(error, 'start'), undefined)), queue: Promise.resolve() };
+    sessions.set(id, session);
     return session;
   }
 
+  /** Ends what the execution left open in its steps: a model call still running is abandoned with them. */
+  async function settleSteps(turn: TurnTrace | undefined): Promise<void> {
+    if (!turn) return;
+    for (const step of turn.steps.values()) await step.complete();
+    for (const model of turn.models.values()) await model.own?.complete();
+    turn.steps.clear();
+    turn.models.clear();
+  }
+
   async function record(session: SessionTrace, tracing: SessionTracing, event: FxHookEvent): Promise<void> {
-    if (event.type === 'turn.start' && event.turnId) {
+    if (event.type === 'turn.start') {
       const e = event;
+      if (!e.turnId) return;
+      // A takeover in this process: the execution it replaces is done with its steps.
+      await settleSteps(session.turn);
       // Each execution asks again: the library continues the turn from its checkpoint, which another process may have moved on.
-      const op = await tracing.turn({ turnId: e.turnId!, sequence: 0, ...(e.data.input ? { title: e.data.input } : {}) });
-      session.turn = { id: e.turnId!, op, steps: new Map(), models: new Map(), tools: new Map(), waits: new Map() };
+      // libfx's hooks carry no turn number: the session numbers its turns.
+      const op = await tracing.turn({ turnId: e.turnId, ...(e.data.input ? { title: e.data.input } : {}) });
+      session.turn = { id: e.turnId, execution: e.executionId, op, fenced: false, steps: new Map(), models: new Map(), tools: new Map(), cancelled: new Map(), waits: new Map() };
       return;
     }
     const turn = session.turn;
-    if (!turn || turn.id !== event.turnId || !turn.op || turn.op.finished) return;
+    if (event.type === 'journal.error') {
+      // A journal receipt names no execution: the one recording now is the one another worker's write fenced out.
+      if (turn && event.data.fenced) turn.fenced = true;
+      return;
+    }
+    if (!turn || turn.id !== event.turnId || turn.execution !== event.executionId) return;
     const op = turn.op;
-    const stepKey = `${event.executionId}:${event.stepIndex}`;
+    if (event.type === 'turn.end') {
+      const e = event;
+      session.turn = undefined;
+      await settleSteps(turn);
+      if (!op || op.finished) return;
+      const { outcome, error, handoff } = e.data;
+      // Handed to another worker, fenced out by one (libfx then ends it `interrupted`), yielded or paused:
+      // the execution that resumes it continues the turn, with its cut-off calls still open.
+      if (!handoff && !turn.fenced && outcome !== 'yielded' && outcome !== 'paused' && outcome !== 'fenced') {
+        for (const tool of turn.cancelled.values()) await tool.complete({ outcome: 'cancelled' });
+        if (outcome === 'failed') await op.complete({ outcome, failed: true, error: new Error(error ?? 'the turn failed') });
+        // `interrupted` with no handoff is the user's cancel, which the session's history keeps.
+        else await op.complete({ outcome: outcome === 'completed' ? 'completed' : 'cancelled' });
+      }
+      await tracing.flush();
+      return;
+    }
+    if (!op || op.finished) return;
     switch (event.type) {
       case 'step.start': {
-        if (!event.executionId || event.stepIndex < 1) return;
-        turn.steps.set(stepKey, await tracing.step(op, turn.id, { execution: event.executionId, stepIndex: event.stepIndex - 1 }));
+        if (!turn.execution || event.stepIndex < 1) return;
+        turn.steps.set(event.stepIndex, await tracing.step(op, turn.id, { execution: turn.execution, stepIndex: event.stepIndex - 1 }));
         return;
       }
       case 'step.end': {
-        await turn.steps.get(stepKey)?.complete();
-        turn.steps.delete(stepKey);
+        await turn.steps.get(event.stepIndex)?.complete();
+        turn.steps.delete(event.stepIndex);
         return;
       }
       case 'model.start': {
         const e = event;
         // A call outside a step (a title, a compaction) is a step of its own.
-        const step = turn.steps.get(stepKey);
+        const step = turn.steps.get(event.stepIndex);
         const own = step ? undefined : await tracing.step(op, turn.id);
         const model = await (step ?? own)!.modelCall(modelOptions(e.data));
-        turn.models.set(`${event.executionId}:${e.data.modelCallId}`, { op: model, ...(own ? { own } : {}) });
+        turn.models.set(e.data.modelCallId, { op: model, ...(own ? { own } : {}) });
         return;
       }
       case 'model.end': {
         const e = event;
-        const key = `${event.executionId}:${e.data.modelCallId}`;
-        const model = turn.models.get(key);
-        turn.models.delete(key);
+        const model = turn.models.get(e.data.modelCallId);
+        turn.models.delete(e.data.modelCallId);
         if (!model) return;
-        if (e.data.error !== null || e.data.cancelled) await model.op.fail(new Error(e.data.error ?? 'the model call was cancelled'));
+        if (e.data.error !== null) await model.op.fail(new Error(e.data.error));
+        else if (e.data.cancelled) await model.op.complete({ outcome: 'cancelled' });
         else {
           const u = e.data.usage;
           await model.op.complete({
@@ -185,18 +236,22 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
       case 'tool.start': {
         const e = event;
         const { callId, name } = e.data.call;
-        // A call an earlier execution started (a rerun after a crash) is the same call.
-        const tool = op.findTool(callId) ?? (await (turn.steps.get(stepKey) ?? [...turn.steps.values()].at(-1))?.tool({ callId, name, arguments: parse(e.data.call.argumentsJson) }));
+        turn.cancelled.delete(callId);
+        // A call an earlier execution started (a rerun after a crash or a handoff) is the same call.
+        const tool = op.findTool(callId) ?? (await (turn.steps.get(event.stepIndex) ?? [...turn.steps.values()].at(-1))?.tool({ callId, name, arguments: parse(e.data.call.argumentsJson) }));
         if (tool) turn.tools.set(callId, tool);
         return;
       }
       case 'tool.end': {
         const e = event;
-        const tool = turn.tools.get(e.data.call.callId) ?? op.findTool(e.data.call.callId);
-        turn.tools.delete(e.data.call.callId);
+        const { callId } = e.data.call;
+        const tool = turn.tools.get(callId) ?? op.findTool(callId);
+        turn.tools.delete(callId);
         if (!tool) return;
         if (e.data.status === 'success') await tool.complete({ outcome: 'completed', output: parse(e.data.output) });
-        else await tool.fail(new Error(e.data.error ?? `the tool call ${e.data.status === 'cancelled' ? 'was cancelled' : 'failed'}`));
+        // The turn's end tells whether it was the user's cancel or a handoff, after which the call runs again.
+        else if (e.data.status === 'cancelled') turn.cancelled.set(callId, tool);
+        else await tool.fail(new Error(e.data.error ?? 'the tool call failed'));
         return;
       }
       case 'wait.start': {
@@ -213,41 +268,38 @@ export function agentRunsHooks(options: FxAgentRunsOptions = {}): FxAgentRunsHoo
         await approval?.complete({ outcome: APPROVAL[e.data.outcome] ?? e.data.outcome });
         return;
       }
-      case 'turn.end': {
-        const e = event;
-        for (const step of turn.steps.values()) await step.complete();
-        turn.steps.clear();
-        const outcome = e.data.outcome;
-        // Yielded, paused, handed off or fenced: the turn goes on in another execution.
-        if (outcome === 'completed' || outcome === 'cancelled') await op.complete({ outcome });
-        else if (outcome === 'failed') await op.complete({ outcome, failed: true, error: new Error(e.data.error ?? 'the turn failed') });
-        await tracing.flush();
-        return;
-      }
     }
   }
 
   return {
-    // The library records content only where the session's audience allows.
-    captureContent: true,
+    // libfx reads this once, as it makes the agent. With agentRuns() registered by then, content crosses only where the audience records it.
+    get captureContent() {
+      const decision = agentRunsHook()?.capture(options.audience);
+      return decision ? decision.emit && (decision.recordInputs || decision.recordOutputs) : true;
+    },
     onEvent(event) {
       const hook = agentRunsHook();
       if (!hook) return;
-      const session = sessionFor(event.sessionId, hook);
+      // A session's trace starts with a turn. Journal receipts, and calls that outlive their turn (a title), find none open.
+      if (event.turnId === null && event.type !== 'journal.error') return;
+      const session = sessions.get(event.sessionId) ?? (event.type === 'turn.start' && event.turnId ? open(event.sessionId, hook) : undefined);
+      if (!session) return;
       // libfx does not wait for a hook: each session's events are recorded one at a time, in order.
       const next: Promise<void> = session.queue
         .then(async () => {
           const tracing = await session.tracing;
           if (tracing) await record(session, tracing, event);
-          // A finished turn with nothing queued behind it leaves nothing to keep: the session's next turn starts afresh.
-          if (session.queue === next && session.turn?.op?.finished && sessions.get(event.sessionId) === session) sessions.delete(event.sessionId);
         })
-        .catch(report);
+        .catch((error: unknown) => report(error, event.type.endsWith('.start') ? 'start' : 'complete'))
+        .then(() => {
+          // Between turns, with nothing queued behind, the session keeps nothing: its next turn reads its checkpoint again.
+          if (session.queue === next && !session.turn && sessions.get(event.sessionId) === session) sessions.delete(event.sessionId);
+        });
       session.queue = next;
       pending = pending.then(() => next);
       keepAlive(next);
     },
-    onError: report,
+    onError: (error) => report(error),
     async flush() {
       for (;;) {
         const at = pending;
