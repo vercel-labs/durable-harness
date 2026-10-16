@@ -12,6 +12,28 @@ export type ModelResult = Omit<ModelCallReturn<unknown>, 'result'>;
 /** Who may read a session's trace content in Agent Runs: `public` records model and tool content, the others metadata only. */
 export type TraceAudience = 'public' | 'private' | 'unknown';
 
+/**
+ * A request's tool definitions as a trace keeps them: each tool's type, id,
+ * name, description and input schema, whichever API it came in (Anthropic's
+ * `input_schema`, OpenAI's `parameters` or `function`, the AI SDK's
+ * `inputSchema`). Nothing else is kept: a provider's tool can carry its own
+ * credentials (an MCP tool's `authorization` and `headers`), which belong in
+ * no span and no checkpoint.
+ */
+export function toolDefinitions(tools: readonly unknown[]): Record<string, unknown>[] {
+  const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  return tools.flatMap((tool) => {
+    if (tool === null || typeof tool !== 'object') return [];
+    const t = tool as Record<string, unknown>;
+    const fn = t.function !== null && typeof t.function === 'object' ? (t.function as Record<string, unknown>) : undefined;
+    const name = text(t.name) ?? text(fn?.name) ?? text(t.id);
+    if (name === undefined) return [];
+    const description = text(t.description) ?? text(fn?.description);
+    const inputSchema = t.inputSchema ?? t.input_schema ?? t.parameters ?? fn?.parameters;
+    return [{ ...(text(t.type) ? { type: t.type } : {}), ...(text(t.id) ? { id: t.id } : {}), name, ...(description ? { description } : {}), ...(inputSchema !== undefined ? { inputSchema } : {}) }];
+  });
+}
+
 export const traceAudienceOf = (value: unknown): TraceAudience | undefined =>
   value === 'public' || value === 'private' || value === 'unknown' ? value : undefined;
 

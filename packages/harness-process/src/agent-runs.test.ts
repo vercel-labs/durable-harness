@@ -4,6 +4,28 @@ import { gatewayModelOptions, gatewayModelResult, ResponseCapture } from './agen
 const sse = (events: unknown[]) => events.map((e) => `event: x\ndata: ${JSON.stringify(e)}\n\n`).join('');
 
 describe("a CLI's model requests for Agent Runs", () => {
+  it('keeps each tool\'s name, description and schema, and no credential a tool carries', () => {
+    const schema = { type: 'object', properties: { q: { type: 'string' } } };
+    const options = gatewayModelOptions({
+      path: '/v1/responses',
+      body: {
+        model: 'openai/gpt-5.5',
+        input: [{ role: 'user', content: 'hi' }],
+        tools: [
+          { type: 'function', name: 'lookup', description: 'Looks it up.', parameters: schema },
+          { type: 'mcp', server_label: 'crm', server_url: 'https://mcp.example.com', authorization: 'Bearer mcp-secret', headers: { 'x-api-key': 'header-secret' } },
+          { name: 'read', description: 'Reads.', input_schema: schema },
+          { type: 'function', function: { name: 'write', description: 'Writes.', parameters: schema } },
+        ],
+      },
+    });
+    expect(options.tools).toEqual([
+      { type: 'function', name: 'lookup', description: 'Looks it up.', inputSchema: schema },
+      { name: 'read', description: 'Reads.', inputSchema: schema },
+      { type: 'function', name: 'write', description: 'Writes.', inputSchema: schema },
+    ]);
+    expect(JSON.stringify(options)).not.toMatch(/mcp-secret|header-secret/);
+  });
   it("reads Anthropic's Messages API (Claude Code)", () => {
     const options = gatewayModelOptions({
       path: '/v1/messages?beta=true',

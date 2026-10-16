@@ -1,5 +1,5 @@
 import type { Attributes } from '@vercel/agent-runs';
-import type { ContentPart, ModelOptions, ModelResult } from 'harness-world/agent-runs';
+import { type ContentPart, type ModelOptions, type ModelResult, toolDefinitions } from 'harness-world/agent-runs';
 
 /**
  * A CLI's model requests, as Agent Runs records them: the CLIs speak
@@ -130,7 +130,7 @@ export function gatewayModelOptions(request: { path: string; model?: string; bod
     modelId: id,
     ...(messages ? { messages } : {}),
     ...(instructions ? { instructions } : {}),
-    ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
+    ...(Array.isArray(body.tools) ? { tools: toolDefinitions(body.tools) } : {}),
   };
 }
 

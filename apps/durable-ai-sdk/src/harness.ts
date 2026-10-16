@@ -21,6 +21,7 @@ import {
   wrapLanguageModel,
 } from 'ai';
 import { modelContent } from '@vercel/agent-runs/ai-sdk';
+import { toolDefinitions } from 'harness-world/agent-runs';
 import { type DriveContext, EffectFailure, Fatal, type Harness, type HostToolIO, type PromptDocs, promptDocsText, type ReplayPolicy, type SessionState, Yield } from 'durable-harness';
 
 /**
@@ -227,7 +228,7 @@ async function tracedGenerate(ctx: DriveContext, model: LanguageModelV4, params:
     modelId: model.modelId,
     messages: params.prompt.filter((m) => m.role !== 'system'),
     ...(system.length ? { instructions: system.join('\n\n') } : {}),
-    ...(params.tools ? { tools: params.tools } : {}),
+    ...(params.tools ? { tools: toolDefinitions(params.tools) } : {}),
   });
   try {
     const result = await generate(ctx, model, params, attempts, key);
