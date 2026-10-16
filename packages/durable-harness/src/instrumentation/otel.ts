@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ROOT_CONTEXT, context, type Context, type ContextManager } from '@opentelemetry/api';
 import type { BasicTracerProvider, SpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { AgentSpanIdGenerator, createAgentRun, otelTelemetry, type AgentRun, type CaptureDecision, type TraceErrorHandler } from '@vercel/agent-runs';
+import type { AgentRun, CaptureDecision, TraceErrorHandler } from '@vercel/agent-runs';
 import type { World } from '@workflow/world';
 import { AGENT_RUNS, type AgentRunsHook, type SessionTracing, type TraceAudience } from 'harness-world/agent-runs';
 import { VERSION } from 'harness-world/names';
@@ -42,16 +42,20 @@ const CONTENT: CaptureDecision = { emit: true, recordInputs: true, recordOutputs
 const METADATA: CaptureDecision = { emit: true, recordInputs: false, recordOutputs: false };
 const defaultCapture = (audience: TraceAudience) => (audience === 'public' ? CONTENT : METADATA);
 
-/** OpenTelemetry's SDK at the versions this module is tested with: optional peer dependencies only it loads. */
+/** `@vercel/agent-runs` and OpenTelemetry's SDK at the versions this module is tested with: optional peer dependencies only it loads. */
 const OTEL_SDK_PINS = {
+  '@vercel/agent-runs': '0.0.1',
   '@opentelemetry/sdk-trace-base': '2.2.0',
   '@opentelemetry/resources': '2.2.0',
   '@opentelemetry/otlp-transformer': '0.208.0',
 } as const;
 const OTEL_SDK_INSTALL = `pnpm add ${Object.entries(OTEL_SDK_PINS).map(([name, version]) => `${name}@${version}`).join(' ')}`;
 
-const sdk = await Promise.all([import('@opentelemetry/sdk-trace-base'), import('@opentelemetry/resources'), import('@opentelemetry/otlp-transformer')]).then(
-  ([traceBase, resources, transformer]) => ({
+const sdk = await Promise.all([import('@vercel/agent-runs'), import('@opentelemetry/sdk-trace-base'), import('@opentelemetry/resources'), import('@opentelemetry/otlp-transformer')]).then(
+  ([agentRuns, traceBase, resources, transformer]) => ({
+    AgentSpanIdGenerator: agentRuns.AgentSpanIdGenerator,
+    createAgentRun: agentRuns.createAgentRun,
+    otelTelemetry: agentRuns.otelTelemetry,
     BasicTracerProvider: traceBase.BasicTracerProvider,
     resourceFromAttributes: resources.resourceFromAttributes,
     JsonTraceSerializer: transformer.JsonTraceSerializer,
@@ -59,7 +63,7 @@ const sdk = await Promise.all([import('@opentelemetry/sdk-trace-base'), import('
   (error: unknown) => {
     const missing = missingPackage(error);
     if (!missing) throw error;
-    return { missing: new Error(`durable-harness/instrumentation/otel: agentRuns() records spans with OpenTelemetry's SDK, optional peer dependencies of durable-harness, and ${missing} is not installed. Install them: ${OTEL_SDK_INSTALL}`, { cause: error }) };
+    return { missing: new Error(`durable-harness/instrumentation/otel: agentRuns() records spans with @vercel/agent-runs and OpenTelemetry's SDK, optional peer dependencies of durable-harness, and ${missing} is not installed. Install them: ${OTEL_SDK_INSTALL}`, { cause: error }) };
   }
 );
 function missingPackage(error: unknown): string | undefined {
@@ -107,7 +111,7 @@ class AsyncContextManager implements ContextManager {
  */
 export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
   if ('missing' in sdk) throw sdk.missing;
-  const { BasicTracerProvider, resourceFromAttributes, JsonTraceSerializer } = sdk;
+  const { AgentSpanIdGenerator, createAgentRun, otelTelemetry, BasicTracerProvider, resourceFromAttributes, JsonTraceSerializer } = sdk;
   const onError: TraceErrorHandler =
     options.onError ??
     ((error, at) => console.warn(`[durable-harness] Agent Runs: ${at.phase} failed`, error instanceof Error ? error.message : error));

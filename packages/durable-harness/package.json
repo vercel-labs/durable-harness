@@ -15,7 +15,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "keywords": [
     "agent",
@@ -122,7 +122,6 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.0",
-    "@vercel/agent-runs": "0.0.1",
     "@vercel/oidc": "3.2.0",
     "@workflow/utils": "^5.0.2",
     "@workflow/world": "^5.0.4",
@@ -146,6 +145,7 @@
     "@opentelemetry/otlp-transformer": ">=0.208.0 <1",
     "@opentelemetry/resources": "^2.2.0",
     "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@vercel/agent-runs": "^0.0.1",
     "@vercel/sandbox": "^3.7.0",
     "@workflow/world-postgres": "^5.0.4",
     "effect": "4.0.0-rc.112",
@@ -211,6 +211,9 @@
     },
     "@opentelemetry/sdk-trace-base": {
       "optional": true
+    },
+    "@vercel/agent-runs": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -226,6 +229,7 @@
     "@opentelemetry/otlp-transformer": "0.208.0",
     "@opentelemetry/resources": "2.2.0",
     "@opentelemetry/sdk-trace-base": "2.2.0",
+    "@vercel/agent-runs": "0.0.1",
     "effect": "4.0.0-rc.112",
     "harness-world": "workspace:*",
     "harness-world-claude-code": "workspace:*",
