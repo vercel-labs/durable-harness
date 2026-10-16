@@ -19,6 +19,7 @@ import {
   type OpenTurn,
   openTurn as findOpenTurn,
   recoveryNote,
+  restartEvent,
   replayBy,
   type ToolBridge,
   toolBridge,
@@ -748,6 +749,8 @@ class OpenCodeDrive {
     // The note quotes the turn's prompts when OpenCode may have lost them.
     const note = recoveryNote(state, { pending: [], prompts: lost.length > 0 })!.text;
     this.journal.message({ type: 'message', role: 'user', text: note, synthetic: 'recovery' });
+    // OpenCode starts the step the crash cut off over: what a reader saw of its reply is replaced by what the log kept (`restartEvent`).
+    this.ctx.live(restartEvent(opening.turn));
     const [s0, t0] = [this.starts, this.terminals];
     await this.request({ type: 'recover', note });
     await this.turn(() => this.starts > s0 || this.terminals > t0);

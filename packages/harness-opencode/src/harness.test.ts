@@ -282,7 +282,8 @@ describe('the OpenCode drive', () => {
       open(h);
       await admit(h);
       await h.request({ type: 'barrier', kind: 'primary' });
-      h.commit(['session.step.started'], ['session.tool.input.started', { id: 'toolu_pay', name: 'unsafe_make_payment' }], ['session.tool.called', { id: 'toolu_pay', input: pay }]);
+      h.send({ type: 'text', delta: 'Paying acme now.' });
+      h.commit(['session.step.started'], ['session.text.ended', { text: 'Paying acme now.' }], ['session.tool.input.started', { id: 'toolu_pay', name: 'unsafe_make_payment' }], ['session.tool.called', { id: 'toolu_pay', input: pay }]);
       await h.request({ type: 'tool', callId: 'toolu_pay', name: 'unsafe_make_payment', input: pay });
     };
     let note = '';
@@ -323,6 +324,17 @@ describe('the OpenCode drive', () => {
     const entries = transcriptOf(state).map((r) => r.data);
     expect(entries).toContainEqual({ type: 'message', role: 'user', text: note, synthetic: 'recovery' });
     expect(entries.at(-1)).toEqual({ type: 'turn', status: 'completed' });
+    // The live stream: the first drive's text, then `restart` with what the log kept of the turn, before the resumed reply.
+    const abort = new AbortController();
+    const live: { type?: string; text?: string; delta?: string }[] = [];
+    for await (const ev of b.sessions.live(sessionId, { signal: abort.signal }) as AsyncIterable<{ type?: string }>) {
+      live.push(ev);
+      if (ev.type === 'idle' && live.some((e) => e.type === 'restart')) abort.abort();
+    }
+    expect(live.filter((e) => e.type === 'text' || e.type === 'restart')).toEqual([
+      { type: 'text', delta: 'Paying acme now.' },
+      { type: 'restart', text: 'Paying acme now.' },
+    ]);
     expect(b.errors).toEqual([]);
   });
 
@@ -388,6 +400,19 @@ describe('the OpenCode drive', () => {
     const entries = transcriptOf(state).map((r) => r.data);
     expect(entries).toContainEqual({ type: 'message', role: 'user', text: note, synthetic: 'recovery' });
     expect(entries.at(-1)).toEqual({ type: 'turn', status: 'completed' });
+    // The cut-off reply streamed live and was never in the log: `restart` keeps only "Sending it.", then the resumed reply streams.
+    const abort = new AbortController();
+    const live: { type?: string; text?: string; delta?: string }[] = [];
+    for await (const ev of b.sessions.live(sessionId, { signal: abort.signal }) as AsyncIterable<{ type?: string }>) {
+      live.push(ev);
+      if (ev.type === 'idle' && live.some((e) => e.type === 'restart')) abort.abort();
+    }
+    const restart = live.findIndex((e) => e.type === 'restart');
+    expect(live[restart]).toEqual({ type: 'restart', text: 'Sending it.' });
+    const text = (from: number, to: number) => live.slice(from, to).flatMap((e) => (e.type === 'text' ? [e.delta] : [])).join('');
+    expect(text(0, restart)).toMatch(/^Sending it\..+/);
+    // The stand-in's crashed host can still stream a few deltas as the next drive starts (a real crash writes nothing more).
+    expect(text(restart + 1, live.length)).toMatch(/Recovered from the log: the email went out\.$/);
     expect(b.errors).toEqual([]);
   });
 

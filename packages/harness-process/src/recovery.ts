@@ -121,3 +121,17 @@ const indent = (t: string) => t.split('\n').map((l) => `    ${l}`);
 function clip(t: string, max: number): string {
   return t.length <= max ? t : `${t.slice(0, max)}… [${t.length - max} more characters]`;
 }
+
+/**
+ * The live event a harness sends as it resumes a turn a crash cut off,
+ * before the model answers again: the model starts the step the crash
+ * interrupted over, so what a reader saw of its reply is replaced.
+ * `text` is the turn's text as the log kept it (the assistant text of its
+ * finished steps, and the text before each tool call); a reader shows it in
+ * place of what it showed of the turn so far (everything since the last
+ * `idle`), and appends what streams after it.
+ */
+export function restartEvent(turn: OpenTurn): { type: 'restart'; text: string } {
+  const kept = turn.entries.flatMap((r) => (r.data?.type === 'message' && r.data.role === 'assistant' && r.data.text ? [r.data.text] : []));
+  return { type: 'restart', text: kept.join('\n\n') };
+}

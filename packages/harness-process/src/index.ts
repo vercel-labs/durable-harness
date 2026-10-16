@@ -22,7 +22,7 @@ export { clip, failureText, Mutex, toolBridge, toolKey } from './tools.ts';
 export type { BridgedTool, ToolBridge, ToolBridgeOptions, ToolResult } from './tools.ts';
 export { zodFromJsonSchema, zodShapeFromJsonSchema } from './zod.ts';
 export type { JsonSchemaObject } from './zod.ts';
-export { openTurn, recoveryNote } from './recovery.ts';
+export { openTurn, recoveryNote, restartEvent } from './recovery.ts';
 export type { OpenTurn, RecoveryCall, RecoveryNote, RecoveryOptions } from './recovery.ts';
 export { defaultRoot, defaultShell, GROUP_REGISTRY_SCRIPT, groupAlive, groupOf, identity, isAlive, killRegistered, ownGroup, ProcessHost, watchParent } from './host.ts';
 export type { Exit, HostedProcess, PidRecord, ProcessHostOptions, SessionDir, SpawnOptions, WatchOptions } from './host.ts';

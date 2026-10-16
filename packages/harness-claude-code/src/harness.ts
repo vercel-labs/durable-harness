@@ -20,6 +20,7 @@ import {
   placeSubmissions,
   type ProviderTool,
   recoveryNote,
+  restartEvent,
   replayBy,
   type SessionMachine,
   type SessionProcess,
@@ -821,6 +822,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           const note = recoveryNote(ctx.state(), { prompts: !!open && lostPrompts(ctx.state(), open.placed, store).length > 0 });
           if (note) {
             if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
+            // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
+            ctx.live(restartEvent(note.turn));
             await send(note.text, note.pending, { synthetic: 'recovery' });
             await runTurn();
           }

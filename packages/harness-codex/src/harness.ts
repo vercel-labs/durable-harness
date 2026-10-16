@@ -18,6 +18,7 @@ import {
   NativeJournal,
   placeSubmissions,
   recoveryNote,
+  restartEvent,
   type SessionMachine,
   type SessionProcess,
   settleAbandonedModelSteps,
@@ -1086,6 +1087,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           const n = transcriptOf(ctx.state()).filter((r) => r.data.type === 'message' && r.data.role === 'user').length;
           journal.message({ type: 'message', role: 'user', text: notes ? `${notes}\n\n${text}` : text, synthetic: 'recovery' } satisfies TranscriptEntry);
           await placeSubmissions(ctx, note.pending);
+          // Codex answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
+          ctx.live(restartEvent(note.turn));
           // Its client id names the submissions the note carries: once Codex has recorded it, they are not owed again.
           await turn(text, recoveryClientId(n, [...owed, ...note.pending]));
         }
