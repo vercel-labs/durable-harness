@@ -74,14 +74,15 @@ in `test/cli-quirks.test.ts`.
 
 `test/agent-runs.test.ts` runs one tool turn of every server harness (Pi, Pi
 with pi-durable, fx, the AI SDK, Claude Code, Codex, OpenCode) with scripted
-models on world-local, through durable-harness's OpenTelemetry integration
-(`durable-harness/instrumentation/otel`) with an in-memory span processor. It
-checks each turn's spans as Vercel Agent Runs reads them: the `invoke_agent`
-root, an `agent.step` per model and tool call with its `chat` or
-`execute_tool` span under it, all in one trace, a tool span carrying the id
-of the call the model's reply names (Agent Runs joins the two by it), and that
-the default export policy leaves no prompt, answer or tool content on a
-non-public session's spans (`src/agent-runs.ts`).
+models on world-local, through durable-harness's `agentRuns()`
+(`durable-harness/instrumentation/otel`, on `@vercel/agent-runs`) with an
+in-memory span processor. It checks each turn's spans as Vercel Agent Runs
+reads them: the `invoke_agent` root in the `eve.agent` scope at schema 4, an
+`agent.step` per model call with its `chat` span and the tool calls it asked
+for under it, all in the turn's trace, and a tool span carrying the id of the
+call the model's reply names (Agent Runs joins the two by it)
+(`src/agent-runs.ts`). That a session that is not public records only
+metadata is durable-harness's own `test/agent-runs.test.ts`.
 
 `test/agent-runs-live.test.ts` does the same with the real CLIs and AI Gateway
 models, and also checks model ids, the prompt in the model's input and token

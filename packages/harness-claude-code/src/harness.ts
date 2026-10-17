@@ -400,6 +400,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
 
   return {
     name: options.name ?? 'claude-code',
+    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+    modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
       // crash left open after its turn ended is closed (no request will retry it).

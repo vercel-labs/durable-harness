@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { instrumentedDrive } from './instrumentation.ts';
+import { tracedDrive } from './agent-runs.ts';
 import { monotonicFactory } from 'ulid';
 import { encode } from './codec.ts';
 import type { StepEnvelope } from './fold.ts';
@@ -1015,7 +1015,7 @@ async function deliverOpen(
       current = drive;
       let exit: Exit | undefined;
       try {
-        await instrumentedDrive(harness, drive.ctx);
+        await tracedDrive(harness, drive.ctx);
         // A rejection that stopped the drive while the harness wound down.
         const halted = drive.halted();
         if (halted) throw halted;

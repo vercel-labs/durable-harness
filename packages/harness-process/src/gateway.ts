@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
-import { TransformStream } from 'node:stream/web';
+import { isModelRequest, ResponseCapture } from './agent-runs.ts';
 import type { GatewayErrorCode, GatewayHandler } from './environment.ts';
 
 /**
@@ -49,9 +49,11 @@ export interface GatewayProxyOptions {
    * forwarded. The function it returns, if any, is called once that request
    * is over: its response ended, failed, or its connection closed (the child
    * died, the proxy closed). `ModelSteps.request` is one: the drive's model
-   * steps.
+    * steps.
    */
-  track?: (request: { method: string; path: string; model?: string }) => TrackEnd | void;
+  track?: (request: TrackedRequest) => TrackEnd | void;
+  /** Read a bounded model request for tracing. Otherwise requests stream straight through. Default false. */
+  captureRequest?: boolean;
   /**
    * Forward only requests that carry this value (`authorization: Bearer
    * <token>` or `x-api-key: <token>`), or one of these values; anything
@@ -72,12 +74,22 @@ export interface GatewayProxyOptions {
 /** A fresh placeholder key for a child, to give `gatewayProxy` as its `token`: one per proxy, never reused. */
 export const gatewayToken = (prefix = 'harness-world'): string => `${prefix}-${randomUUID()}`;
 
+/** A model request as `track` sees it: `model` is the Gateway protocol's header (`ai-language-model-id`), `body` the parsed request. */
+export interface TrackedRequest {
+  method: string;
+  path: string;
+  model?: string;
+  body?: unknown;
+}
+
 /**
  * What `track` returns for a request: called once the request is over. With
  * `firstToken`, the proxy also calls that when the response streams its
- * first output (text, reasoning or a tool call: `FIRST_OUTPUT`).
+ * first output (text, reasoning or a tool call: `FIRST_OUTPUT`). With
+ * `capture`, the end carries the response's text (`ResponseCapture`'s
+ * bounds: its start and its end); never a credential or a header.
  */
-export type TrackEnd = ((end: { status?: number; error?: string; requestBody?: unknown; responseBody?: string }) => void) & { firstToken?: () => void; capture?: boolean };
+export type TrackEnd = ((end: { status?: number; error?: string; response?: string }) => void) & { firstToken?: () => void; capture?: boolean };
 
 /**
  * A response's first output, in any of the APIs the CLIs speak through the
@@ -122,18 +134,26 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
       res.writeHead(401, { 'content-type': 'text/plain' });
       return void res.end('harness-world-process gateway proxy: the request does not carry the key this proxy gave its child');
     }
-    // The AI SDK Gateway protocol (used by OpenCode) sends the model in
-    // this header, not the JSON body. Pass only that identifier to tracing;
-    // never capture the request's credential or other headers.
+    const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+    const request = { method: req.method ?? 'GET', path: req.url ?? '/' };
+    const captured = options.track && options.captureRequest && isModelRequest(request) ? await readRequest(req) : undefined;
+    const body = captured?.body;
     const model = req.headers['ai-language-model-id'];
-    const ended = options.track?.({ method: req.method ?? 'GET', path: req.url ?? '/', ...(typeof model === 'string' && model ? { model } : {}) });
-    let requestBody = '';
-    let responseBody = '';
-    const capture = !!ended && !!ended.capture;
-    const requestDecoder = new TextDecoder();
-    const captureLimit = 256_000;
+    const ended = options.track?.({
+      ...request,
+      ...(typeof model === 'string' && model ? { model } : {}),
+      ...(body?.length ? { body: parseBody(body) } : {}),
+    });
+    const capture = ended?.capture ? new ResponseCapture() : undefined;
     // `close` comes after the response ended, or when its connection went first.
-    if (ended) res.once('close', () => ended({ ...(res.writableFinished ? { status: res.statusCode } : { error: 'the connection closed before the response ended' }), ...(capture ? { requestBody: parseBody(requestBody), responseBody } : {}) }));
+    if (ended) {
+      res.once('close', () =>
+        ended({
+          ...(res.writableFinished ? { status: res.statusCode } : { error: 'the connection closed before the response ended' }),
+          ...(capture ? { response: capture.text() } : {}),
+        })
+      );
+    }
     let firstToken = ended ? ended.firstToken : undefined;
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) {
@@ -143,17 +163,10 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
     for (const [k, v] of Object.entries(auth(await credential()))) headers.set(k, v);
     const abort = new AbortController();
     res.on('close', () => abort.abort());
-    const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
     const upstream = await fetch(`${target}${req.url ?? '/'}`, {
       method: req.method ?? 'GET',
       headers,
-      ...(hasBody ? { body: Readable.toWeb(req).pipeThrough(new TransformStream({
-        transform(chunk, controller) {
-          if (capture && requestBody.length < captureLimit) requestBody += requestDecoder.decode(chunk, { stream: true }).slice(0, captureLimit - requestBody.length);
-          controller.enqueue(chunk);
-        },
-        flush() { if (capture) requestBody += requestDecoder.decode().slice(0, captureLimit - requestBody.length); },
-      })) as ReadableStream, duplex: 'half' } : {}),
+      ...(body ? { body } : hasBody ? { body: (captured?.stream ?? Readable.toWeb(req)) as ReadableStream, duplex: 'half' } : {}),
       signal: abort.signal,
     } as RequestInit);
     const out: Record<string, string> = {};
@@ -164,14 +177,13 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
     res.writeHead(upstream.status, out);
     options.onRequest?.({ method: req.method ?? 'GET', path: req.url ?? '/', status: upstream.status });
     if (!upstream.body) return void res.end();
-    // Decode once for policy-controlled capture and the first-output mark.
     // A short tail carries a first-output match across chunk boundaries.
-    const decoder = capture || firstToken ? new TextDecoder() : undefined;
+    const decoder = firstToken || capture ? new TextDecoder() : undefined;
     let tail = '';
     for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
-      if (decoder && (capture || firstToken)) {
+      if (decoder) {
         const text = decoder.decode(chunk, { stream: true });
-        if (capture && responseBody.length < captureLimit) responseBody += text.slice(0, captureLimit - responseBody.length);
+        capture?.push(text);
         if (firstToken) {
           const output = tail + text;
           if (FIRST_OUTPUT.test(output)) {
@@ -182,7 +194,7 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
       }
       res.write(chunk);
     }
-    if (capture && decoder) responseBody += decoder.decode().slice(0, captureLimit - responseBody.length);
+    if (decoder) capture?.push(decoder.decode());
     res.end();
   }
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
@@ -198,7 +210,6 @@ export async function gatewayProxy(options: GatewayProxyOptions): Promise<Gatewa
   };
 }
 
-function parseBody(text: string): unknown { try { return JSON.parse(text); } catch { return undefined; } }
 
 // ---------------------------------------------------------------------------
 // gatewayHandler: the VM path (docs/workspaces.md §5.5)
@@ -309,7 +320,7 @@ export interface GatewayHandlerOptions {
   /** The headers that carry the credential. Default `authorization: Bearer` and `x-api-key`. */
   auth?: (credential: string) => Record<string, string>;
   /** As `gatewayProxy`'s: `ModelSteps.request`. */
-  track?: (request: { method: string; path: string; model?: string }) => TrackEnd | void;
+  track?: (request: TrackedRequest) => TrackEnd | void;
   /** Requests in flight at once. Default 8 (§5.5). */
   concurrency?: number;
   /**
@@ -960,12 +971,14 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
       }
       if (body.length > MODEL_BODY_MAX_BYTES) throw refuse('bad_request', 'the body is over 4 MiB');
       let forward: string | undefined;
+      let trackedBody: Record<string, unknown> | undefined;
       let model: string | undefined;
       let outputLimit: number | undefined;
       if (route.body) {
         const parsed = parseStrictJson(body);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw refuse('bad_request', 'the body must be a JSON object');
         const out = route.body(parsed as Record<string, unknown>, check);
+        trackedBody = out;
         model = typeof out.model === 'string' ? out.model : undefined;
         const limitOf = out.max_tokens ?? out.max_output_tokens;
         outputLimit = typeof limitOf === 'number' ? limitOf : undefined;
@@ -999,7 +1012,8 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
 
       inflight++;
       const info = { method, path: route.path, ...(model ? { model } : {}) };
-      const end = options.track?.(info) || undefined;
+      const end = options.track?.({ ...info, ...(trackedBody ? { body: trackedBody } : {}) }) || undefined;
+      const capture = end?.capture ? new ResponseCapture() : undefined;
       const billed = !!route.body && !route.free;
       const requestBytes = forward === undefined ? 0 : Buffer.byteLength(forward);
       const seen: Seen = { head: '', window: '', streamed: 0 };
@@ -1034,7 +1048,7 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
           log('the ledger refused a charge', { path: route.path, error: String((err as Error)?.message ?? err).slice(0, 200) });
         }
         try {
-          end?.(outcome);
+          end?.({ ...outcome, ...(capture ? { response: capture.text() } : {}) });
         } catch (err) {
           log("the model step's end failed", { error: String((err as Error)?.message ?? err).slice(0, 200) });
         }
@@ -1087,6 +1101,7 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
           try {
             for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
               const text = decoder.decode(chunk, { stream: true });
+              capture?.push(text);
               seen.streamed += chunk.length;
               if (seen.head.length < 16_384) seen.head += text.slice(0, 16_384 - seen.head.length);
               seen.window = (seen.window + text).slice(-65_536);
@@ -1109,4 +1124,35 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
       throw e;
     }
   };
+}
+
+async function readRequest(req: IncomingMessage): Promise<{ body?: Buffer; stream?: ReturnType<typeof Readable.toWeb> }> {
+  const chunks: Buffer[] = [];
+  const iterator = req[Symbol.asyncIterator]();
+  let size = 0;
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) return { body: Buffer.concat(chunks, size) };
+    const chunk = next.value as Buffer;
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size > MODEL_BODY_MAX_BYTES) {
+      // Reuse the prefix and the same iterator: breaking a for-await would close the request.
+      const stream = Readable.from((async function* () {
+        try {
+          yield* chunks;
+          for (;;) { const next = await iterator.next(); if (next.done) return; yield next.value; }
+        } finally { await iterator.return?.(); }
+      })());
+      return { stream: Readable.toWeb(stream) };
+    }
+  }
+}
+
+function parseBody(body: Buffer): unknown {
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    return undefined;
+  }
 }

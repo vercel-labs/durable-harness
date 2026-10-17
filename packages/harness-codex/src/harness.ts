@@ -387,6 +387,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
   return {
     name: options.name ?? 'codex',
+    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+    modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
       // crash left open after its turn ended is closed (no request will retry it).

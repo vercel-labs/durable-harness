@@ -13,7 +13,6 @@ import {
 import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { chatRoute, defineDoc, durableSessions, type HostTool, isMark, liveStreamName, QUEUE_PREFIX, rawSessions, readJsonLines, Unavailable, UNAVAILABLE_STEP, vercelAnchors, workRemains } from 'harness-world';
 import { hostProcess, leasedWorld } from 'harness-world/testing';
-import { INSTRUMENTATION, type InstrumentationRuntime } from 'harness-world/instrumentation';
 import { Type } from 'typebox';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type PiHarnessOptions, piHarness } from './index.ts';
@@ -62,32 +61,6 @@ async function localWorld(dataDir: string, recoverActiveRuns = false) {
 }
 
 describe('pi timing marks', () => {
-  it('traces the full live model context while keeping journal inputs incremental', async () => {
-    const inputs: any[] = [];
-    const outputs: unknown[] = [];
-    const scope = { start(_name: string, input: unknown) { inputs.push(JSON.parse(JSON.stringify(input))); return { end(output: unknown) { outputs.push(output); } }; }, end() {} };
-    const global = globalThis as { [INSTRUMENTATION]?: InstrumentationRuntime };
-    global[INSTRUMENTATION] = { session: () => scope, drive: (harness, ctx) => harness.drive({ ...ctx, instrumentation: scope }) };
-    try {
-      const a = setupModel();
-      a.faux.setResponses([fauxAssistantMessage(fauxToolCall('shout', { text: 'hi' }), { stopReason: 'toolUse' }), fauxAssistantMessage(fauxText('I shouted HI.'))]);
-      const world = await localWorld(await mkdtemp(join(tmpdir(), 'hw-pi-trace-')));
-      const sessions = durableSessions({ world, harness: piHarness({ model: a.model, streamFn: a.streamFn, tools: [shoutTool()] }) });
-      world.registerHandler(QUEUE_PREFIX, sessions.handler);
-      const { sessionId } = await sessions.start({ prompt: 'shout hi' });
-      const state = await until(async () => {
-        const state = await sessions.inspect(sessionId);
-        return state.effectOrder.filter(effect => effect.status === 'completed').length === 3 ? state : undefined;
-      });
-      expect(inputs).toHaveLength(2);
-      expect(inputs[1].messages.map((message: Message) => message.role)).toEqual(['system', 'user', 'assistant', 'toolResult']);
-      expect(JSON.stringify(inputs[1])).toContain('shout hi');
-      expect(outputs).toHaveLength(2);
-      const second = state.effectOrder.filter(effect => effect.name === 'model')[1]!;
-      expect((second.input as any).appended.map((message: Message) => message.role)).toEqual(['toolResult']);
-      expect((second.input as any).messages).toBeUndefined();
-    } finally { delete global[INSTRUMENTATION]; }
-  });
   it('marks the first model output, durable and with durability off', async () => {
     const script = () => [fauxAssistantMessage(fauxToolCall('shout', { text: 'hi' }), { stopReason: 'toolUse' }), fauxAssistantMessage(fauxText('I shouted HI.'))];
     const a = setupModel();

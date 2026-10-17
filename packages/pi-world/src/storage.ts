@@ -1,4 +1,3 @@
-import { instrumentation, type TraceScope, type TraceOperation } from 'harness-world/instrumentation';
 import type { Context } from '@earendil-works/chord';
 import { createContextKey } from '@earendil-works/chord/context';
 import {
@@ -28,8 +27,10 @@ import { decode, encode } from 'harness-world/codec';
 import { type Anchor, type AnchorPolicy, anchorKey, holdAnchor } from 'harness-world/anchor';
 import { covers, type InBandCounters, inBandFenceSupported, isDefinitiveRefusal, isInBandSuperseded, probeInBandCounters } from 'harness-world/fence';
 import { workflowNameFor } from 'harness-world/names';
+import { agentRunsHook, type TraceAudience, traceAudienceOf } from 'harness-world/agent-runs';
 import { EXECUTION_CONTEXT, PI_WAKE_QUEUE } from 'harness-world/queue';
 import { monotonicFactory } from 'ulid';
+import { PiTracing } from './agent-runs.ts';
 import { SessionFiles } from './files.ts';
 import { type SandboxRecordValue, SessionSandbox } from './sandbox-record.ts';
 import type { DriveFence } from 'harness-world';
@@ -132,9 +133,7 @@ interface SandboxEntry {
   anchor?: Anchor;
 }
 
-/** Who may read a session's trace content in Agent Runs (durable-harness/instrumentation/otel). */
-export type TraceAudience = 'public' | 'private' | 'unknown';
-const traceAudienceOf = (v: unknown): TraceAudience | undefined => (v === 'public' || v === 'private' || v === 'unknown' ? v : undefined);
+export type { TraceAudience } from 'harness-world/agent-runs';
 
 export interface WorldStorageOptions {
   /**
@@ -491,8 +490,8 @@ async function hasLiveTasks(memory: Storage, context: Context): Promise<boolean>
  * its commits itself (see `Backstop`).
  */
 export class WorldStorage implements Storage {
-  private tracing?: TraceScope;
-  private readonly operations = new Map<string, TraceOperation>();
+  /** Agent Runs for the commits this storage makes, when `agentRuns()` is registered (undefined until the first commit, null without it). */
+  private tracing?: PiTracing | null;
   private readonly traceName: string;
   private readonly traceAudience: WorldStorageOptions['traceAudience'];
   private queue: Promise<unknown> = Promise.resolve();
@@ -862,56 +861,12 @@ export class WorldStorage implements Storage {
   }
 
   private async traceWrites(writes: readonly StorageWrite[], context: Context): Promise<void> {
-    const runtime = instrumentation();
-    if (!runtime) return;
+    if (this.tracing === undefined) {
+      const session = agentRunsHook()?.session({ world: this.world, runId: this.sessionId, agentName: this.traceName, ...(this.traceAudience ? { audience: this.traceAudience } : {}) });
+      this.tracing = session ? new PiTracing(session, this.memory) : null;
+    }
     // Only accepted writes are observed. Replaying a journal emits no spans.
-    for (const write of writes) {
-      if (write.type !== 'task') continue;
-      const task = write.value;
-      const key = String(task.id);
-      const checkpoint = task.state.status === 'running' ? task.state.checkpoint as Record<string, unknown> : undefined;
-      const generation = task.kind === 'pi.generation';
-      const tool = task.kind === 'pi.tool';
-      if (!generation && !tool) continue;
-      if (task.state.status === 'running' && !this.operations.has(key)
-          && (generation ? checkpoint?.phase === 'request' : checkpoint?.phase === 'execute')) {
-        const entries = (await this.memory.scanEntries({ conversationId: task.conversationId }, 1000, undefined, context)).items;
-        const input = task.input as Record<string, unknown>;
-        const assistant = entries.find(entry => entry.id === input.assistant)?.model?.[0];
-        const call = assistant && 'content' in assistant && Array.isArray(assistant.content)
-          ? assistant.content.find(part => part.type === 'toolCall' && part.id === input.callId) : undefined;
-        const name = generation ? 'model' : `tool.${call && 'name' in call ? call.name : 'unknown'}`;
-        const model = checkpoint?.model as { provider?: string; modelId?: string } | undefined;
-        this.tracing ??= runtime.session(this.sessionId, this.traceName, String(task.owner ?? task.id), entries.find(entry => entry.kind === 'pi.user')?.model?.[0], this.traceAudience, this.world);
-        this.operations.set(key, this.tracing.start(name, generation ? {
-          model: model ? `${model.provider}/${model.modelId}` : 'unknown',
-          messages: entries.slice().reverse().flatMap(entry => entry.model ?? []),
-        } : checkpoint?.arguments, key));
-      }
-      if (task.state.status === 'terminal') {
-        const outcome = task.state.outcome;
-        const resultEntry = writes.find(w => w.type === 'entry' && w.value.byTaskId === task.id && (w.value.kind === 'pi.assistant' || w.value.kind === 'pi.tool-result'));
-        const output = resultEntry?.type === 'entry' ? (generation ? resultEntry.value.model?.[0] : resultEntry.value.model) : outcome.status === 'completed' ? outcome.result : undefined;
-        this.operations.get(key)?.end(output, outcome.status === 'completed' ? undefined : outcome);
-        this.operations.delete(key);
-      }
-    }
-    for (const write of writes) {
-      if (write.type !== 'entry' || write.value.byTaskId === undefined) continue;
-      const entry = write.value;
-      if (entry.kind !== 'pi.assistant' && entry.kind !== 'pi.tool-result') continue;
-      const key = String(entry.byTaskId);
-      // A generation can wait for tools before its task becomes terminal;
-      // end the model span when the actual provider result commits.
-      this.operations.get(key)?.end(entry.kind === 'pi.assistant' ? entry.model?.[0] : entry.model);
-      this.operations.delete(key);
-    }
-    if (writes.some(w => w.type === 'submission' && w.value.type === 'input' && (w.value.status === 'done' || w.value.status === 'unanswered')) && this.operations.size === 0) {
-      const unanswered = writes.some(w => w.type === 'submission' && w.value.type === 'input' && w.value.status === 'unanswered');
-      this.tracing?.end(unanswered ? new Error('Pi input ended without an answer') : undefined, unanswered ? 'failed' : 'completed');
-      await this.tracing?.flush?.();
-      this.tracing = undefined;
-    }
+    await this.tracing?.commit(writes, context);
   }
 
   /**
@@ -1010,9 +965,8 @@ export class WorldStorage implements Storage {
     // A crashed process closes nothing: it writes no close entry.
     if (this.dead) return (this.closing ??= Promise.resolve());
     this.closing ??= this.queue.then(async () => {
-      const unfinished = await hasLiveTasks(this.memory, context).catch(() => true);
       try {
-        if (this.committed && !this.fenced && unfinished) {
+        if (this.committed && !this.fenced && (await hasLiveTasks(this.memory, context).catch(() => true))) {
           const anchor = this.anchor;
           const entry: CloseEntry = { v: 1, close: true, after: -1, by: this.writer, ...(anchor ? { anchor } : {}) };
           // Best effort: without it a wake judges the last commit's anchor, which
@@ -1035,10 +989,8 @@ export class WorldStorage implements Storage {
       } finally {
         this.letGo();
       }
-      this.tracing?.end(undefined, unfinished ? 'running' : 'completed');
-      await this.tracing?.flush?.();
-      this.tracing = undefined;
-      this.operations.clear();
+      // A turn with work left goes on in the storage a wake opens, from its checkpoint.
+      await this.tracing?.flush().catch(() => {});
       await this.memory.close(context);
     });
     return this.closing;

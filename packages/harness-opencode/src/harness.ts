@@ -205,6 +205,8 @@ export function opencodeHarness(options: OpenCodeHarnessOptions = {}): Harness {
 
   return {
     name: options.name ?? 'opencode',
+    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+    modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Another OpenCode or effect than the pins fails the turn here, with both versions, instead of hanging it.
       assertOpenCodeVersions();
@@ -246,7 +248,7 @@ export function opencodeHarness(options: OpenCodeHarnessOptions = {}): Harness {
         // so the proxy takes that too (whoever holds it needs no proxy).
         const key = gatewayToken();
         const envKey = !options.connect ? process.env.AI_GATEWAY_API_KEY : undefined;
-        proxy = await gatewayProxy({ credential, track: steps.request, token: envKey ? [key, envKey] : key, ...(options.gatewayUrl ? { target: options.gatewayUrl } : {}) });
+        proxy = await gatewayProxy({ credential, track: steps.request, captureRequest: ctx.tracing !== undefined, token: envKey ? [key, envKey] : key, ...(options.gatewayUrl ? { target: options.gatewayUrl } : {}) });
         await mkdir(here, { recursive: true, mode: 0o700 });
         await writeFile(join(here, OWNER), JSON.stringify({ pid: process.pid }), { mode: 0o600 });
         init = {
