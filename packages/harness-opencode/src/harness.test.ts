@@ -346,10 +346,13 @@ describe('the OpenCode drive', () => {
     let crashed!: () => void;
     const died = new Promise<void>((r) => (crashed = r));
     const mail = { to: 'a@b.c', subject: 'hi', body: 'x' };
+    let deadHost: FakeHost | undefined;
     /** OpenCode's model request: through the drive's proxy (`gatewayBaseURL`), after the barrier. */
     const ask = async (h: FakeHost, text: string) => {
       await h.request({ type: 'barrier', kind: 'primary' });
-      await streamFromModel(`${h.init.gatewayBaseURL}/language-model`, text, (delta) => h.send({ type: 'text', delta }), { authorization: `Bearer ${h.init.gatewayKey}` });
+      await streamFromModel(`${h.init.gatewayBaseURL}/language-model`, text, (delta) => {
+        if (h !== deadHost) h.send({ type: 'text', delta });
+      }, { authorization: `Bearer ${h.init.gatewayKey}` });
     };
     const first: Script = async (h) => {
       open(h);
@@ -376,7 +379,7 @@ describe('the OpenCode drive', () => {
       ]);
       await h.take('close');
     };
-    const a = await session(dataDir, [first], { chaos: true, crash: () => crashed(), gatewayUrl: model.url, confirmMs: 500 });
+    const a = await session(dataDir, [first], { chaos: true, crash: () => { deadHost = a.hosts[0]; crashed(); }, gatewayUrl: model.url, confirmMs: 500 });
     const { sessionId } = await a.sessions.start();
     await a.sessions.chaos(sessionId, { at: 'model', afterMs: 400 });
     await a.sessions.send(sessionId, 'email a@b.c once');
@@ -411,8 +414,8 @@ describe('the OpenCode drive', () => {
     expect(live[restart]).toEqual({ type: 'restart', text: 'Sending it.', parts: ['Sending it.'] });
     const text = (from: number, to: number) => live.slice(from, to).flatMap((e) => (e.type === 'text' ? [e.delta] : [])).join('');
     expect(text(0, restart)).toMatch(/^Sending it\..+/);
-    // The stand-in's crashed host can still stream a few deltas as the next drive starts (a real crash writes nothing more).
-    expect(text(restart + 1, live.length)).toMatch(/Recovered from the log: the email went out\.$/);
+    // A process crash emits no more deltas: only the resumed host writes after the restart.
+    expect(text(restart + 1, live.length)).toBe('Recovered from the log: the email went out.');
     expect(b.errors).toEqual([]);
   });
 

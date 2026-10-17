@@ -84,6 +84,7 @@ export function pi(options: PiOptions): Agent {
   };
   const harness: Harness = {
     name,
+    modelCalls: 'self',
     async drive(ctx) {
       return (await (built ??= build().catch((error) => {
         built = undefined;

@@ -12,6 +12,7 @@ import {
   Yield,
 } from 'harness-world';
 import type { FxEngineOptions } from 'libfx';
+import { fxModelOptions, fxModelResult, fxStepAttributes } from './agent-runs.ts';
 
 /**
  * libfx's `createFxEngine` (from `libfx` on Node, `libfx/browser` in a tab):
@@ -216,6 +217,7 @@ export function fxHarness(options: FxHarnessOptions): Harness {
   let config: Promise<string> | undefined;
   return {
     name: 'fx',
+    modelCalls: 'self',
     drive: async (ctx) => new FxDrive(options, ctx, await (config ??= fxConfigHash(options))).run(),
   };
 }
@@ -747,70 +749,81 @@ class FxDrive {
       },
       async (io) => {
         if (this.stop) throw this.stop;
-        this.inFlight.add(abort);
+        const traced = await this.ctx.tracing?.modelCall(fxModelOptions(model, request));
         try {
-          const attempts = this.options.modelAttempts ?? 3;
-          let response: Response | undefined;
-          for (let attempt = 1; ; attempt++) {
+          const output = await (async () => {
+            this.inFlight.add(abort);
             try {
-              response = await abortable(realFetch(url, { ...init, body: bodyText, signal: abort.signal }), abort.signal);
-            } catch (err) {
-              if (this.stop) throw this.stop;
-              if (attempt >= attempts) throw err;
-              await sleep(500 * attempt);
-              continue;
-            }
-            if (response.ok && response.body) break;
-            const detail = await response.text().catch(() => '');
-            if (this.stop) throw this.stop;
-            if (attempt >= attempts || !(response.status === 429 || response.status >= 500)) {
-              throw new Error(`model request failed: ${response.status} ${detail}`);
-            }
-            await sleep(500 * attempt);
-          }
-          const decoder = new TextDecoder();
-          const reader = response.body!.getReader();
-          let first = false;
-          let body = '';
-          let pending = '';
-          let holding = false;
-          for (;;) {
-            let read: ReadableStreamReadResult<Uint8Array>;
-            try {
-              read = await abortable(reader.read(), abort.signal);
-            } catch (err) {
-              if (this.stop) throw this.stop;
-              throw err;
-            }
-            if (this.stop) throw this.stop;
-            const { value, done } = read;
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            body += chunk;
-            pending += chunk;
-            // TTFT: the first model output event of this request (text, reasoning or a tool call).
-            if (!first && hasOutput(pending)) {
-              first = true;
-              this.ctx.mark?.('model.first_token', { key });
-            }
-            // Forward whole events only, until the first one worth holding.
-            let boundary = pending.indexOf('\n\n');
-            while (!holding && boundary !== -1) {
-              const event = pending.slice(0, boundary + 2);
-              if (!isDelta(event)) {
-                holding = true;
-                break;
+              const attempts = this.options.modelAttempts ?? 3;
+              let response: Response | undefined;
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  response = await abortable(realFetch(url, { ...init, body: bodyText, signal: abort.signal }), abort.signal);
+                } catch (err) {
+                  if (this.stop) throw this.stop;
+                  if (attempt >= attempts) throw err;
+                  await sleep(500 * attempt);
+                  continue;
+                }
+                if (response.ok && response.body) break;
+                const detail = await response.text().catch(() => '');
+                if (this.stop) throw this.stop;
+                if (attempt >= attempts || !(response.status === 429 || response.status >= 500)) {
+                  throw new Error(`model request failed: ${response.status} ${detail}`);
+                }
+                await sleep(500 * attempt);
               }
-              pending = pending.slice(boundary + 2);
-              await forward(event);
-              io.progress(event);
-              boundary = pending.indexOf('\n\n');
+              const decoder = new TextDecoder();
+              const reader = response.body!.getReader();
+              let first = false;
+              let body = '';
+              let pending = '';
+              let holding = false;
+              for (;;) {
+                let read: ReadableStreamReadResult<Uint8Array>;
+                try {
+                  read = await abortable(reader.read(), abort.signal);
+                } catch (err) {
+                  if (this.stop) throw this.stop;
+                  throw err;
+                }
+                if (this.stop) throw this.stop;
+                const { value, done } = read;
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                body += chunk;
+                pending += chunk;
+                // TTFT: the first model output event of this request (text, reasoning or a tool call).
+                if (!first && hasOutput(pending)) {
+                  first = true;
+                  this.ctx.mark?.('model.first_token', { key });
+                }
+                // Forward whole events only, until the first one worth holding.
+                let boundary = pending.indexOf('\n\n');
+                while (!holding && boundary !== -1) {
+                  const event = pending.slice(0, boundary + 2);
+                  if (!isDelta(event)) {
+                    holding = true;
+                    break;
+                  }
+                  pending = pending.slice(boundary + 2);
+                  await forward(event);
+                  io.progress(event);
+                  boundary = pending.indexOf('\n\n');
+                }
+              }
+              held = pending;
+              return summarize(response!.status, body);
+            } finally {
+              this.inFlight.delete(abort);
             }
-          }
-          held = pending;
-          return summarize(response!.status, body);
-        } finally {
-          this.inFlight.delete(abort);
+          })();
+          await traced?.model.complete({ outcome: 'completed', result: fxModelResult(output) });
+          traced?.attempt.attributes(fxStepAttributes(output.body));
+          return output;
+        } catch (error) {
+          await traced?.model.fail(error);
+          throw error;
         }
       }
     );

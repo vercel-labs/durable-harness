@@ -11,7 +11,6 @@ import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Anchor, claimDrive, localAnchors, releaseDrive, vercelAnchors } from 'harness-world/anchor';
 import { leasedWorld } from 'harness-world/testing';
-import { INSTRUMENTATION, type InstrumentationRuntime } from 'harness-world/instrumentation';
 import { hasUnfinishedWork, journalHead, QUEUE_PREFIX, runWake, StorageFenced, WAKE_QUEUE, type WorldStorage, type WorldStorageOptions, worldStorage } from './index.ts';
 
 const ctx = BACKGROUND_CONTEXT;
@@ -66,63 +65,6 @@ async function transcript(harness: Harness): Promise<string> {
 }
 
 describe('Pi Harness on worldStorage', () => {
-  it('traces accepted model and tool commits, and emits nothing when the journal is replayed', async () => {
-    const operations: { name: string; input: unknown; output?: unknown }[] = [];
-    const sessions: unknown[][] = [];
-    const ended = vi.fn();
-    const globals = globalThis as { [INSTRUMENTATION]?: InstrumentationRuntime };
-    const previous = globals[INSTRUMENTATION];
-    globals[INSTRUMENTATION] = {
-      drive: (h, c) => h.drive(c),
-      session(...args) {
-        sessions.push(args);
-        return {
-          start(name, input) {
-            const operation = { name, input } as typeof operations[number];
-            operations.push(operation);
-            return { end(output) { operation.output = output; } };
-          },
-          end: ended,
-        };
-      },
-    };
-    try {
-      const { world } = await newWorld();
-      const a = agent(world, [
-        fauxAssistantMessage([fauxToolCall('read', { path: 'a.txt' })], { stopReason: 'toolUse' }),
-        fauxAssistantMessage([fauxText('Read it.')]),
-      ], [defineTool({ name: 'read', description: 'Read.', parameters: Type.Object({ path: Type.String() }), replay: 'safe', execute: async () => ({ content: [{ type: 'text', text: 'file contents' }] }) })], { traceAudience: 'private' });
-      const sessionId = await worldStorage.create(world);
-      const harness = await a.openAgent(sessionId);
-      const root = await harness.root(ctx, { agent: a.agentChoice });
-      await (await root.submit({ type: 'input', content: 'Read a.txt.' }, ctx)).wait(ctx);
-      await harness.close(ctx);
-      expect(operations.map(o => o.name)).toEqual(['model', 'tool.read', 'model']);
-      expect(operations[0]!.input).toMatchObject({ messages: expect.arrayContaining([expect.objectContaining({ role: 'user', content: 'Read a.txt.' })]) });
-      expect(operations[0]!.output).toMatchObject({ role: 'assistant', usage: expect.any(Object) });
-      expect(operations[1]!.input).toEqual({ path: 'a.txt' });
-      expect(JSON.stringify(operations[1]!.output)).toContain('file contents');
-      expect(sessions).toHaveLength(1);
-      expect(sessions[0]![4]).toBe('private');
-      expect(ended).toHaveBeenCalled();
-      const count = operations.length;
-      const reopened = await a.openAgent(sessionId);
-      await transcript(reopened);
-      await reopened.close(ctx);
-      expect(operations).toHaveLength(count);
-
-      const failing = agent(world, [fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'provider failed' })], []);
-      const failedHarness = await failing.openAgent(await worldStorage.create(world));
-      const failedRoot = await failedHarness.root(ctx, { agent: failing.agentChoice });
-      expect((await (await failedRoot.submit({ type: 'input', content: 'Fail this turn.' }, ctx)).wait(ctx)).status).toBe('unanswered');
-      await failedHarness.close(ctx);
-      expect(ended).toHaveBeenLastCalledWith(expect.any(Error), 'failed');
-    } finally {
-      if (previous) globals[INSTRUMENTATION] = previous;
-      else delete globals[INSTRUMENTATION];
-    }
-  });
-
   it('answers an input, and a fresh process reads the same session back', async () => {
     const { world, dataDir } = await newWorld();
     const a = agent(world, [fauxAssistantMessage([fauxText('Paris.')])], []);

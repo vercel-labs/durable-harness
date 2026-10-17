@@ -13,12 +13,11 @@ function stateWith(opts: { armed?: 'tool' | 'model' | 'any' | 'sandbox'; kind?: 
 }
 
 /** A drive context whose effects only record that they ran and what they returned. */
-function stubCtx(state: SessionState, instrumentation?: DriveContext['instrumentation']) {
+function stubCtx(state: SessionState) {
   const abort = new AbortController();
   const effects: { key: string; options: EffectOptions; output?: unknown; error?: unknown }[] = [];
   const ctx = {
     runId: 'run',
-    instrumentation,
     state: () => state,
     signal: abort.signal,
     halt: (err: unknown) => abort.abort(err),
@@ -41,6 +40,30 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const post = { method: 'POST', path: '/v1/messages' };
 
 describe('ModelSteps', () => {
+  it('waits for completed request tracing before closing the drive', async () => {
+    const { ctx } = stubCtx(stateWith());
+    let release!: () => void;
+    const saved = new Promise<void>(resolve => { release = resolve; });
+    const tracing = { modelCall: async () => ({ model: { complete: () => saved }, attempt: { attributes() {} } }) } as unknown as DriveContext['tracing'];
+    const steps = new ModelSteps({ ...ctx, tracing });
+    steps.request(post)!({ status: 200 });
+    let closed = false;
+    const closing = steps.close().then(() => { closed = true; });
+    await tick();
+    expect(closed).toBe(false);
+    release();
+    await closing;
+    expect(closed).toBe(true);
+  });
+
+  it('does not let an unfinished trace keep a drive past its deadline', async () => {
+    const { ctx } = stubCtx(stateWith());
+    const tracing = { modelCall: async () => ({ model: { complete: () => new Promise(() => {}) }, attempt: { attributes() {} } }) } as unknown as DriveContext['tracing'];
+    const steps = new ModelSteps({ ...ctx, tracing, deadline: Date.now() + 10 });
+    steps.request(post)!({ status: 200 });
+    await steps.close();
+  }, 1000);
+
   it('counts POSTs as model requests, not token counts or reads', () => {
     expect(isModelRequest(post)).toBe(true);
     expect(isModelRequest({ method: 'POST', path: '/v1/messages/count_tokens' })).toBe(false);
@@ -75,33 +98,6 @@ describe('ModelSteps', () => {
     steps.request(post)!({ error: 'cut' });
     await steps.close();
     expect(marks).toEqual(['model.request request:0', 'model.first_token request:0', 'model.done request:0 200', 'model.request request:1', 'model.done request:1']);
-  });
-
-  it('traces model content alongside live marks, without storing it in the chaos step', async () => {
-    const starts: unknown[] = [];
-    const outputs: unknown[] = [];
-    const marks: string[] = [];
-    const { ctx, effects } = stubCtx(stateWith({ armed: 'model' }), {
-      start(name, input) {
-        starts.push({ name, input });
-        return { end(output) { outputs.push(output); } };
-      },
-      end() {},
-    });
-    ctx.mark = (name) => { marks.push(name); };
-    const steps = new ModelSteps(ctx);
-    const request = { ...post, model: 'anthropic/test' };
-    const end = steps.request(request)!;
-    expect(end.capture).toBe(true);
-    end.firstToken?.();
-    const outcome = { status: 200, requestBody: { messages: ['private prompt'] }, responseBody: 'private response' };
-    end(outcome);
-    await steps.close();
-    expect(starts).toEqual([{ name: 'model', input: request }]);
-    expect(outputs).toEqual([outcome]);
-    expect(marks).toEqual(['model.request', 'model.first_token', 'model.done']);
-    expect(effects[0]!.output).toEqual({ requests: 1, status: 200 });
-    expect(JSON.stringify(effects)).not.toContain('private');
   });
 
   it('writes nothing when no drill is armed', async () => {

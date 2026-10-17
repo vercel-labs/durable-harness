@@ -101,6 +101,8 @@ export function referenceHarness(options: ReferenceHarnessOptions): Harness {
   const host = options.host ?? new ProcessHost();
   return {
     name: options.name ?? 'reference',
+    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+    modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no child. A model step a
       // crash left open after its turn ended is closed (no request will retry it).
@@ -129,7 +131,7 @@ export function referenceHarness(options: ReferenceHarnessOptions): Harness {
       let proxy: GatewayProxy | undefined;
       // The child's key: a fresh one per drive, the only one the proxy forwards.
       const key = gatewayToken();
-      if (options.modelUrl) proxy = await gatewayProxy({ target: options.modelUrl, credential: async () => 'reference', token: key, track: steps.request });
+      if (options.modelUrl) proxy = await gatewayProxy({ target: options.modelUrl, credential: async () => 'reference', token: key, track: steps.request, captureRequest: ctx.tracing !== undefined });
       const env = { ...options.env, ...(proxy ? { FAKE_CLI_MODEL_URL: `${proxy.url}/v1/model`, FAKE_CLI_MODEL_KEY: key } : {}) };
       const proc = await host
         .spawn(ctx.runId, {

@@ -395,7 +395,7 @@ await host.killStale(runId), host.reset(runId), host.pidRecord(runId)
 ```ts
 const steps = new ModelSteps(ctx, { log? });
 const token = gatewayToken(); // the child's key
-const proxy = await gatewayProxy({ credential, token, track: steps.request });
+const proxy = await gatewayProxy({ credential, token, track: steps.request, captureRequest: ctx.tracing !== undefined });
 // ... the drive ...
 await steps.close(); // before the drive returns, then proxy.close()
 ```

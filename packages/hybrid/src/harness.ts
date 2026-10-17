@@ -74,6 +74,8 @@ function byHands(name: string, lanes: LaneOptions | undefined, build: (hands: Hy
   const built = new Map<HybridHands, Harness>();
   return {
     name,
+    // Pi and fx, whichever the hands build, record their own model calls.
+    modelCalls: 'self',
     ...(lanes ? { lanes } : {}),
     drive(ctx) {
       const hands = hybridHandsOf(ctx);
@@ -248,6 +250,7 @@ export function hybridFxHarness(options: HybridFxHarnessOptions): Harness {
   const fx = byHands(HYBRID_FX_HARNESS, undefined, (hands) => fxHarness(hybridFxOptions(options, hands)));
   return {
     name: HYBRID_FX_HARNESS,
+    modelCalls: 'self',
     ...(options.lanes ? { lanes: options.lanes } : {}),
     async drive(ctx) {
       const why = ctx.lane === 'browser' ? await options.cannotDrive?.() : undefined;

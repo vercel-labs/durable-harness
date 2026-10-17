@@ -18,7 +18,8 @@
   "dependencies": {
     "@vercel/oidc": "3.2.0",
     "@workflow/world": "catalog:",
-    "harness-world": "workspace:*"
+    "harness-world": "workspace:*",
+    "@vercel/agent-runs": "0.0.1"
   },
   "devDependencies": {
     "@workflow/world-local": "catalog:",

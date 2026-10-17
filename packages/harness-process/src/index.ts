@@ -52,7 +52,7 @@ export {
 } from './gateway.ts';
 export { isModelRequest, modelCrashArmed, ModelSteps, settleAbandonedModelSteps, unfinishedModelStep } from './model.ts';
 export type { ModelStepOutput, ModelStepsOptions } from './model.ts';
-export type { BodyCheck, BodyPolicy, GatewayCap, GatewayHandlerOptions, GatewayLedger, GatewayProxy, GatewayProxyOptions, GatewayRoute, ProviderTool, TrackEnd } from './gateway.ts';
+export type { BodyCheck, BodyPolicy, GatewayCap, GatewayHandlerOptions, GatewayLedger, GatewayProxy, GatewayProxyOptions, GatewayRoute, ProviderTool, TrackedRequest, TrackEnd } from './gateway.ts';
 export { FileTail } from './tail.ts';
 export { journalLedger, SPEND_STREAM } from './ledger.ts';
 export type { JournalLedger, SpendRecord } from './ledger.ts';
@@ -84,3 +84,4 @@ export type {
   SessionMachine,
   SessionProcess,
 } from './environment.ts';
+export { gatewayModelOptions, gatewayModelResult, ResponseCapture } from './agent-runs.ts';

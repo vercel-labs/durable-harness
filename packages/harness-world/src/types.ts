@@ -195,8 +195,8 @@ export interface SessionState {
 
 /** Everything a harness adapter gets from the kernel while it drives a session. */
 export interface DriveContext {
-  /** Installed by durable-harness's optional tracing integration. */
-  readonly instrumentation?: import('./instrumentation.ts').TraceScope;
+  /** Agent Runs tracing, when durable-harness's `agentRuns()` is registered. */
+  readonly tracing?: import('./agent-runs.ts').DriveTracing;
   readonly runId: string;
   readonly world: World;
   /** The fold of everything read so far. */
@@ -429,6 +429,15 @@ export interface Harness {
    * In-memory state is disposable: the next invocation rebuilds from the log.
    */
   drive(ctx: DriveContext): Promise<void>;
+  /**
+   * How Agent Runs learns this harness's model calls (durable-harness's
+   * `agentRuns()`). `effects` (the default): each `model` effect is one model
+   * call, recorded from its input (`model`: `provider/id`) and output. `self`:
+   * the harness records each call with `ctx.tracing.modelCall`, inside its
+   * `model` effect when it has one (the effect is then the call's step), or
+   * wherever it learns of the request (a CLI behind the Gateway proxy).
+   */
+  modelCalls?: 'effects' | 'self';
   /**
    * Lanes for this harness's sessions only, overriding the driver's
    * `lanes`. Lets one flow route host lane-hopping sessions (a hybrid
