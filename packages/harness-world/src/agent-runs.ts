@@ -75,6 +75,12 @@ export interface SessionTracingInput {
   readonly audience?: TraceAudience;
 }
 
+/** An interrupted tool and approvals that a native engine may not mention again after recovery. */
+export interface ParkedTraceTool {
+  readonly callId: string;
+  readonly approvals: readonly string[];
+}
+
 /**
  * Agent Runs turns for a session that is not driven by the kernel (pi-durable,
  * libfx's own durable agent), checkpointed with the session.
@@ -85,11 +91,17 @@ export interface SessionTracing {
   /** A saved turn under the current capture policy, without starting one. */
   resume(turnId: string): Promise<TurnOperation | undefined>;
   /**
-   * A new step of `turn`, for a model call: numbered in this process, its
-   * attempt this process's number for the turn (recorded before it is
-   * used), so no step of another process, before or after, is the same one.
+   * A new step of `turn`, for a model call. Its attempt is a number for the
+   * turn recorded before it is used, so no step of another process, before
+   * or after, is the same one: this process's number, the step numbered in
+   * this process; or, with `at`, the number of the execution that runs it
+   * (an engine's run or resume of the turn), the step numbered in it.
    */
-  step(turn: TurnOperation, turnId: string): Promise<AttemptOperation>;
+  step(turn: TurnOperation, turnId: string, at?: { readonly execution: string; readonly stepIndex: number }): Promise<AttemptOperation>;
+  /** Tool identities retained with the turn's checkpoint, without their content. */
+  parkedTools(turnId: string): Promise<readonly ParkedTraceTool[]>;
+  /** Replace the tool identities a resumed engine may silently skip. */
+  parkTools(turnId: string, tools: readonly ParkedTraceTool[]): Promise<void>;
   /** Wait for this session's queued checkpoint writes, within the tracing I/O budget. */
   flush(): Promise<void>;
 }
