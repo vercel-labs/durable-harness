@@ -1,4 +1,4 @@
-import { fxAgent, withFxTraces, log, refuseDisabled } from '@/lib/fx-durable';
+import { fxAgent, log, refuseDisabled } from '@/lib/fx-durable';
 
 // Interim, as the libfx durability doc says: Vercel Queues delivers libfx's
 // session messages here until world-vercel can deliver to the function
@@ -13,7 +13,7 @@ export async function POST(request: Request): Promise<Response> {
   if (disabled) return disabled;
   const started = Date.now();
   wake ??= fxAgent().then((agent) => agent.wakeHandler());
-  const response = await withFxTraces(async () => (await wake!)(request));
+  const response = await (await wake)(request);
   const body = await response.clone().text().catch(() => '');
   log('wake', { ms: Date.now() - started, status: response.status, body: body.slice(0, 120) });
   return response;

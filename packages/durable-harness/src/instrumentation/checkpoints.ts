@@ -1,17 +1,18 @@
 import { createHash } from 'node:crypto';
 import type { World } from '@workflow/world';
 import type { TraceCheckpointer, TraceSnapshot } from '@vercel/agent-runs';
+import type { ParkedTraceTool } from 'harness-world/agent-runs';
 import { decodeLine, encodeLine, WRITE_DEADLINE_MS } from 'harness-world/streams';
 
 /** Each new line is self-contained, so recovery reads one chunk instead of the turn's history. */
-interface Line { version: 1; v?: TraceSnapshot | null; drive: number }
-interface State { value?: TraceSnapshot; drives: number; finished: boolean }
+interface Line { version: 1; v?: TraceSnapshot | null; drive: number; parked?: readonly ParkedTraceTool[] }
+interface State { value?: TraceSnapshot; drives: number; finished: boolean; parked?: readonly ParkedTraceTool[] }
 interface Turn extends State {
   runId: string;
   stream: string;
   loaded?: Promise<void>;
   writing: Promise<void>;
-  pending?: { value: TraceSnapshot | null };
+  pending?: { value: TraceSnapshot | null | undefined };
   scheduled: boolean;
   /** Queued writes stay counted until the actual World writes settle, even after a caller times out. */
   storing: number;
@@ -101,6 +102,20 @@ export class TraceStreams {
     return turn.finished;
   }
 
+  async parkedTools(runId: string, turnId: string): Promise<readonly ParkedTraceTool[]> {
+    const turn = this.turn(`turn:${encodeURIComponent(runId)}:${encodeURIComponent(turnId)}`)!;
+    await this.load(turn);
+    return turn.parked ?? [];
+  }
+
+  async parkTools(runId: string, turnId: string, tools: readonly ParkedTraceTool[]): Promise<void> {
+    const turn = this.turn(`turn:${encodeURIComponent(runId)}:${encodeURIComponent(turnId)}`)!;
+    await this.load(turn, true);
+    if (turn.finished) return;
+    turn.parked = tools;
+    this.enqueue(turn, turn.value);
+  }
+
   /** Only writes already queued for this run, not future writes or another session's traffic. */
   async flush(runId?: string): Promise<void> {
     const turns = [...this.turns.values()].filter((turn) => runId === undefined || turn.runId === runId);
@@ -175,6 +190,7 @@ export class TraceStreams {
         turn.finished = state.finished;
       }
       turn.drives = Math.max(turn.drives, state.drives);
+      turn.parked ??= state.parked;
     });
     return turn.loaded;
   }
@@ -211,7 +227,7 @@ export class TraceStreams {
     } finally { signal.removeEventListener('abort', cancel); cancel(); }
     signal.throwIfAborted();
     const line = decodeLine(text.split('\n')[0]!) as Partial<Line>;
-    if (line?.version === 1 && typeof line.drive === 'number') return { value: line.v ?? undefined, drives: line.drive, finished: line.v === null };
+    if (line?.version === 1 && typeof line.drive === 'number') return { value: line.v ?? undefined, drives: line.drive, finished: line.v === null, parked: line.parked };
 
     // Earlier previews wrote separate snapshot and drive lines. Read that history once, strictly.
     let value: TraceSnapshot | undefined;
@@ -241,7 +257,7 @@ export class TraceStreams {
   }
 
   private async put(turn: Turn, value: TraceSnapshot | undefined, finished: boolean): Promise<void> {
-    const line: Line = { version: 1, drive: turn.drives, ...(finished ? { v: null } : value === undefined ? {} : { v: value }) };
+    const line: Line = { version: 1, drive: turn.drives, ...(finished ? { v: null } : value === undefined ? {} : { v: value }), ...(turn.parked?.length ? { parked: turn.parked } : {}) };
     // Bound waiting on the queue, not the write itself: no later checkpoint may overtake it.
     try { await this.world.streams.write(turn.runId, turn.stream, new TextEncoder().encode(`${encodeLine(line)}\n`)); }
     catch (error) { turn.unavailable = error; this.report(error); throw error; }
@@ -250,9 +266,14 @@ export class TraceStreams {
   private write(key: string, value: TraceSnapshot | null): void {
     const turn = this.turn(key);
     if (!turn || turn.unavailable) return;
+    this.enqueue(turn, value);
+  }
+
+  private enqueue(turn: Turn, value: TraceSnapshot | null | undefined): void {
     turn.pending = { value };
     turn.value = value ?? undefined;
     turn.finished = value === null;
+    if (turn.finished) turn.parked = undefined;
     if (turn.scheduled) return;
     turn.scheduled = true;
     turn.storing++;
