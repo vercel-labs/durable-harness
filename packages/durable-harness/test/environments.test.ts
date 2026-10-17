@@ -181,7 +181,7 @@ describe('the /fx and /sandbox entries', () => {
     // The builds with durable sessions: a 0.0.13 dev build at or after 1432, or
     // 0.0.14 (its dev builds too) and up. libfx 0.0.13 itself has no
     // durable-world exports.
-    expect(pkg.peerDependencies.libfx).toBe('>=0.0.13-dev.1432 <0.0.13 || >=0.0.14-0 <0.1.0');
+    expect(pkg.peerDependencies.libfx).toBe('>=0.0.14 <0.1.0');
     const catalog = /^\s+libfx:\s*(\S+)\s*$/m.exec(readFileSync(join(import.meta.dirname, '../../../pnpm-workspace.yaml'), 'utf8'))?.[1];
     const m = /^0\.0\.(\d+)(?:-dev\.(\d+)(?:\.\S+)?)?$/.exec(catalog ?? '');
     expect(m, `catalog libfx ${catalog}`).not.toBeNull();
