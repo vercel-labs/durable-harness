@@ -28,3 +28,14 @@ reworked for it:
   "files last across VMs" covers the next worker's higher token. It needs the
   second worker in a process of its own, with the Sandbox stand-in shared
   between them.
+
+## Live writes after a takeover
+
+A drive's live events aren't fenced: what a drive sends after another drive
+has taken the session over still lands in the session's live stream. OpenCode's
+"a crash while the model streams" test showed it. Its in-process crash kept
+the first drive's stand-in host streaming the cut-off reply, and those deltas
+landed after the next drive's `restart` event, interleaved with the resumed
+reply. The test now stops the stand-in at the crash, as a real crash does.
+A driver that is still running after a takeover (a stalled process) could
+do the same. Its live writes need the drive's fence, as its log writes have.
