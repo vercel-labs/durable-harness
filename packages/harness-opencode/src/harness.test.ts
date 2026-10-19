@@ -344,27 +344,27 @@ describe('the OpenCode drive', () => {
     models.push(model);
     const dataDir = await mkdtemp(join(tmpdir(), 'oc-fake-'));
     let crashed!: () => void;
-    const died = new Promise<void>((r) => (crashed = r));
+    // A real crash takes the process's OpenCode host with it: the stand-in host stops sending at the crash.
+    let dead = false;
+    const died = new Promise<void>((r) => (crashed = () => ((dead = true), r())));
     const mail = { to: 'a@b.c', subject: 'hi', body: 'x' };
-    let deadHost: FakeHost | undefined;
     /** OpenCode's model request: through the drive's proxy (`gatewayBaseURL`), after the barrier. */
-    const ask = async (h: FakeHost, text: string) => {
+    const ask = async (h: FakeHost, text: string, alive = () => true) => {
       await h.request({ type: 'barrier', kind: 'primary' });
-      await streamFromModel(`${h.init.gatewayBaseURL}/language-model`, text, (delta) => {
-        if (h !== deadHost) h.send({ type: 'text', delta });
-      }, { authorization: `Bearer ${h.init.gatewayKey}` });
+      await streamFromModel(`${h.init.gatewayBaseURL}/language-model`, text, (delta) => alive() && h.send({ type: 'text', delta }), { authorization: `Bearer ${h.init.gatewayKey}` });
     };
+    const before = () => !dead;
     const first: Script = async (h) => {
       open(h);
       await admit(h);
-      await ask(h, 'Sending it.');
+      await ask(h, 'Sending it.', before);
       h.commit(['session.step.started'], ['session.text.ended', { text: 'Sending it.' }], ['session.tool.input.started', { id: 'toolu_mail', name: 'unsafe_send_email' }], [
         'session.tool.called',
         { id: 'toolu_mail', input: mail },
       ]);
       const r = await h.request({ type: 'tool', callId: 'toolu_mail', name: 'unsafe_send_email', input: mail });
       h.commit(['session.tool.success', { id: 'toolu_mail', content: [{ type: 'text', text: r.ok ? r.text : '' }] }], ['session.step.ended']);
-      await ask(h, `unsafe_send_email returned: ${r.ok ? r.text : ''}`);
+      await ask(h, `unsafe_send_email returned: ${r.ok ? r.text : ''}`, before);
     };
     let note = '';
     const second: Script = async (h) => {
@@ -379,7 +379,7 @@ describe('the OpenCode drive', () => {
       ]);
       await h.take('close');
     };
-    const a = await session(dataDir, [first], { chaos: true, crash: () => { deadHost = a.hosts[0]; crashed(); }, gatewayUrl: model.url, confirmMs: 500 });
+    const a = await session(dataDir, [first], { chaos: true, crash: () => crashed(), gatewayUrl: model.url, confirmMs: 500 });
     const { sessionId } = await a.sessions.start();
     await a.sessions.chaos(sessionId, { at: 'model', afterMs: 400 });
     await a.sessions.send(sessionId, 'email a@b.c once');
@@ -414,7 +414,6 @@ describe('the OpenCode drive', () => {
     expect(live[restart]).toEqual({ type: 'restart', text: 'Sending it.', parts: ['Sending it.'] });
     const text = (from: number, to: number) => live.slice(from, to).flatMap((e) => (e.type === 'text' ? [e.delta] : [])).join('');
     expect(text(0, restart)).toMatch(/^Sending it\..+/);
-    // A process crash emits no more deltas: only the resumed host writes after the restart.
     expect(text(restart + 1, live.length)).toBe('Recovered from the log: the email went out.');
     expect(b.errors).toEqual([]);
   });
