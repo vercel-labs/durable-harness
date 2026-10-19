@@ -13,7 +13,7 @@ import {
 import { virtual } from 'durable-harness';
 import { vercelChannel } from 'harness-world/vercel-channel';
 import type { VercelSandboxProvider } from 'harness-world-hybrid/sandbox';
-import { byHands, demoSandbox } from './hands';
+import { byHands, checkUpFront, demoSandbox, type UpFront, upFrontFields } from './hands';
 import { wakeLane } from './hybrid';
 import { getSandboxProvider, providerFrom } from './sandbox-provider';
 import { Todos } from './docs';
@@ -53,14 +53,14 @@ export function preloadHarnesses(): void {
   heavy().catch(() => {});
 }
 
-/** A harness whose implementation is built on its first drive. `name` and `lanes` are known up front. */
-function lazyHarness(name: string, lanes: LaneOptions | undefined, make: (h: Heavy) => Harness): Harness {
+/** A harness whose implementation is built on its first drive. `name` and `upFront` are known up front. */
+function lazyHarness(name: string, upFront: UpFront, make: (h: Heavy) => Harness): Harness {
   let built: Promise<Harness> | undefined;
   return {
     name,
-    ...(lanes ? { lanes } : {}),
+    ...upFrontFields(upFront),
     async drive(ctx) {
-      const ready = (built ??= heavy().then(make));
+      const ready = (built ??= heavy().then((h) => checkUpFront(name, upFront, make(h))));
       return (await ready).drive(ctx);
     },
   };
@@ -97,7 +97,7 @@ async function handsTools(h: Heavy, hands: Hands, onWorkspace: (workspace: Param
 }
 
 function pi() {
-  return byHands('pi', undefined, async (hands) => {
+  return byHands('pi', { modelCalls: 'self' }, async (hands) => {
     const h = await heavy();
     const { piAi, gw, piMod } = h;
     const models = piAi.createModels();
@@ -116,7 +116,7 @@ function pi() {
 }
 
 function fx() {
-  return byHands('fx', undefined, async (hands) => {
+  return byHands('fx', { modelCalls: 'self' }, async (hands) => {
     const h = await heavy();
     const { fxMod, handsFx, libfx } = h;
     return fxMod.fxHarness({
@@ -191,7 +191,7 @@ function sandboxOwners(): OwnerPolicy {
 /** The hybrid Pi session, server half: the tools for each session's hands (`config.hands`), the same list as the tab's. */
 function hybrid(world: World) {
   const lanes = serverLanes(world);
-  return lazyHarness(HYBRID_HARNESS, lanes, (h) => {
+  return lazyHarness(HYBRID_HARNESS, { lanes, modelCalls: 'self' }, (h) => {
     const { model, streamFn } = h.hybridMod.createGatewayModel(undefined, MODEL);
     return h.hybridMod.hybridHarness({
       lane: 'function',
@@ -211,7 +211,7 @@ function hybrid(world: World) {
  */
 function hybridFx(world: World) {
   const lanes = serverLanes(world);
-  return lazyHarness(HYBRID_FX_HARNESS, lanes, (h) =>
+  return lazyHarness(HYBRID_FX_HARNESS, { lanes, modelCalls: 'self' }, (h) =>
     h.hybridMod.hybridFxHarness({
       lane: 'function',
       createFxEngine: h.libfx.createFxEngine,

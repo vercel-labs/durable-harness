@@ -42,7 +42,11 @@ export function processHarnessOptions(): HarnessOption[] {
   });
 }
 
-/** The kernel harnesses, each built per hands on its first drive with them (lib/hands.ts `byHands`). */
+/**
+ * The kernel harnesses, each built per hands on its first drive with them
+ * (lib/hands.ts `byHands`). Each records its own model calls: the CLIs and
+ * the reference CLI behind the Gateway proxy, the AI SDK from its requests.
+ */
 export function processKernelHarnesses(): Harness[] {
-  return processHarnesses().map((h) => byHands(h.value, undefined, (hands) => h.load(hands)));
+  return processHarnesses().map((h) => byHands(h.value, { modelCalls: 'self' }, (hands) => h.load(hands)));
 }

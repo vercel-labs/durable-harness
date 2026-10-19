@@ -1,5 +1,5 @@
 import { sandboxName } from 'durable-harness/sandbox';
-import type { Harness, LaneOptions } from 'harness-world';
+import type { Harness } from 'harness-world';
 import type { Brain, Hands, HarnessOption } from 'harness-world-demo-ui';
 import { BUILTIN_HARNESSES, handsReason, isHands, legacyHands, pickHands, sandboxOffReason as sandboxOffCopy } from 'harness-world-demo-ui/axes';
 
@@ -17,20 +17,42 @@ export function handsOfConfig(config: unknown, harness: string): Hands {
 }
 
 /**
+ * What a harness built on its first drive declares before it exists: its
+ * `lanes`, and how Agent Runs learns its model calls. durable-harness's
+ * tracing reads `modelCalls` when a drive starts, before the build: a
+ * wrapper that leaves it out gets every model call recorded twice (an empty
+ * `chat` span from the `model` effect next to the harness's own).
+ */
+export type UpFront = Pick<Harness, 'lanes' | 'modelCalls'>;
+
+/** The fields of `upFront` that are set, for the wrapper. */
+export function upFrontFields(upFront: UpFront): UpFront {
+  return { ...(upFront.lanes ? { lanes: upFront.lanes } : {}), ...(upFront.modelCalls ? { modelCalls: upFront.modelCalls } : {}) };
+}
+
+/** `built`, with a warning when its `modelCalls` is not what its wrapper declared up front. */
+export function checkUpFront(name: string, upFront: UpFront, built: Harness): Harness {
+  const declared = upFront.modelCalls ?? 'effects';
+  const actual = built.modelCalls ?? 'effects';
+  if (actual !== declared) console.warn(`[harness] ${name}: its wrapper declares modelCalls '${declared}', the harness '${actual}': Agent Runs records its model calls wrongly`);
+  return built;
+}
+
+/**
  * One kernel harness that is really one per hands: each is built on the
  * first drive of a session with those hands (in this process), and each
- * drive goes to its session's. `name` and `lanes` are known up front.
+ * drive goes to its session's. `name` and `upFront` are known up front.
  */
-export function byHands(name: string, lanes: LaneOptions | undefined, build: (hands: Hands) => Promise<Harness>): Harness {
+export function byHands(name: string, upFront: UpFront, build: (hands: Hands) => Promise<Harness>): Harness {
   const built = new Map<Hands, Promise<Harness>>();
   return {
     name,
-    ...(lanes ? { lanes } : {}),
+    ...upFrontFields(upFront),
     async drive(ctx) {
       const hands = handsOfConfig(ctx.config, name);
       let harness = built.get(hands);
       if (!harness) {
-        harness = build(hands);
+        harness = build(hands).then((h) => checkUpFront(name, upFront, h));
         built.set(hands, harness);
         // A build that failed (a missing credential) is tried again on the next drive.
         harness.catch(() => built.delete(hands));

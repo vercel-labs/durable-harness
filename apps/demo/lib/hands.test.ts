@@ -119,7 +119,7 @@ describe('each drive builds the harness for its session’s hands', () => {
   it('builds one harness per hands, once, and sends each drive to its own', async () => {
     const built: string[] = [];
     const drove: string[] = [];
-    const harness = byHands('pi', undefined, async (hands) => {
+    const harness = byHands('pi', {}, async (hands) => {
       built.push(hands);
       return { name: 'pi', drive: async (ctx) => void drove.push(`${hands}:${ctx.runId}`) } satisfies Harness;
     });
@@ -130,5 +130,21 @@ describe('each drive builds the harness for its session’s hands', () => {
     await harness.drive(ctx('a', { hands: 'none' }));
     expect(built).toEqual(['none', 'machine', 'virtual']);
     expect(drove).toEqual(['none:a', 'machine:b', 'virtual:c', 'none:a']);
+  });
+
+  it('declares how its model calls are recorded before the first build, and warns when the harness disagrees', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const ctx = { runId: 'a', config: { hands: 'none' } } as Parameters<Harness['drive']>[0];
+      const self = byHands('pi', { modelCalls: 'self' }, async () => ({ name: 'pi', modelCalls: 'self', drive: async () => {} }));
+      expect(self.modelCalls).toBe('self');
+      await self.drive(ctx);
+      expect(warn).not.toHaveBeenCalled();
+      const effects = byHands('pi', { modelCalls: 'self' }, async () => ({ name: 'pi', drive: async () => {} }));
+      await effects.drive(ctx);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("declares modelCalls 'self', the harness 'effects'"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
