@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
+import { harnessModule } from './discovery.ts';
 import { packageDir, resolves } from './native.ts';
 import { FLOW_MAX_DURATION, FLOW_ROUTE, flowTrigger, FX_ROUTE, fxTrigger, type GeneratedRoute, LIBFX_QUEUE_PREFIX, WORKFLOW_FLOW_ROUTE } from './routing.ts';
 
@@ -22,7 +23,7 @@ export function appDir(projectDir: string): string | undefined {
 
 export interface Source {
   file: string;
-  /** It imports a harness subpath (it makes an agent), or `durable-harness/pi-durable` and calls `resumeWith(` (it registers an opener). */
+  /** It exports an agent made at module scope, or registers a pi-durable opener with `resumeWith(` there. */
   agent: boolean;
   /**
    * It opens pi-durable sessions on the World (`openWorldStorage(`,
@@ -308,9 +309,6 @@ function matchesKey(pattern: string, file: string): boolean {
 const SKIP = new Set(['node_modules', 'public', 'out', 'dist', 'build', 'coverage']);
 const SOURCE = /\.(?:[cm]?[jt]sx?)$/;
 const ROUTE_FILE = /^route\.(?:[cm]?[jt]sx?)$/;
-const CORE_IMPORT = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]durable-harness['"]/;
-const HARNESS_IMPORT = /^(?!\s*import\s+type\b).*(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]durable-harness\/(?:claude-code|codex|opencode|pi)['"]/m;
-const PI_DURABLE_IMPORT = /^(?!\s*import\s+type\b).*(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]durable-harness\/pi-durable['"]/m;
 const LIBFX = String.raw`['"]libfx(?:\/node)?['"]`;
 const FX_CALL = /(?<!\bfunction\s*\*?\s*)\bcreateFxAgent\s*(?:<[^()]*>\s*)?\(/;
 
@@ -354,24 +352,26 @@ export const isFxModule = (text: string) => (importsLibfx(text) || importsCreate
  * imports it from), both, or neither (an agent made through a function of
  * the app's own).
  */
-const listedKind = (text: string) => ({ harness: isHarnessModule(text), fx: fxCalls(text) > 0 });
+const listedKind = (text: string) => {
+  const module = harnessModule(text);
+  return { harness: module.agentFactory || module.piOpener, fx: fxCalls(text) > 0 };
+};
 
 /**
  * Whether a module registers a pi-durable opener: a value import of
  * `durable-harness/pi-durable` and a `resumeWith(` call. A module that only
  * opens storages there (a route) is not one: the flow route never imports it.
  */
-export const isPiOpenerModule = (text: string) => PI_DURABLE_IMPORT.test(text) && /\bresumeWith\s*\(/.test(code(text));
+export const isPiOpenerModule = (text: string) => harnessModule(text).piOpener;
 
 /** Whether a module opens pi-durable sessions on the World: a value import of `durable-harness/pi-durable` and a call that opens one. */
-export const opensPiSessions = (text: string) => PI_DURABLE_IMPORT.test(text) && /\b(?:openWorldStorage|acquireHarness|chatRoute)\s*\(/.test(code(text));
+export const opensPiSessions = (text: string) => harnessModule(text).piSessions;
 
 /**
- * Whether a module makes a durable-harness agent: a value import of a harness
- * subpath, `durableAgent(` from durable-harness, or a pi-durable opener
- * (`resumeWith(`).
+ * Whether a module exports a durable-harness agent made at module scope, or
+ * registers a pi-durable opener (`resumeWith(`) there.
  */
-export const isHarnessModule = (text: string) => HARNESS_IMPORT.test(text) || isPiOpenerModule(text) || (CORE_IMPORT.test(text) && /\bdurableAgent\s*\(/.test(text));
+export const isHarnessModule = (text: string) => harnessModule(text).agent;
 
 /** A function, not a value made now: an initializer an export would hold. */
 const FUNCTION_VALUE = /^(?:async\s+)?(?:function\b|class\b|\([^)]*\)\s*(?::[^=]*)?=>|[\w$]+\s*=>)/;
@@ -493,11 +493,10 @@ function scan(projectDir: string, app: string): Source[] {
         }
         const inApp = full.startsWith(app + sep);
         const route = inApp && ROUTE_FILE.test(entry.name) ? routeOf(app, full) : undefined;
-        const agent = isHarnessModule(text);
+        const { agent, piSessions } = harnessModule(text);
         const fx = isFxModule(text);
         const chat = /\bchatRoute\s*\(/.test(text);
         const wake = /\bwakeHandler\s*\(/.test(code(text));
-        const piSessions = opensPiSessions(text);
         if (agent || fx || piSessions || (route && (chat || wake))) out.push({ file: full, agent, fx, chat, wake, ...(piSessions ? { piSessions } : {}), ...(route ? { route } : {}) });
       }
     }

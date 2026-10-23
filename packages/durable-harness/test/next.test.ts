@@ -378,6 +378,65 @@ describe('withDurableHarness, a harness of your own', () => {
   });
 });
 
+describe('withDurableHarness, automatic agent discovery', () => {
+  it('imports exported agents without importing scripts or docs samples for their side effects', async () => {
+    const dir = project({
+      ...STUBS,
+      ...MINE,
+      'scripts/drill.js': `const { durableAgent } = await import('durable-harness')
+async function drill() { return durableAgent({ name: 'drill' }) }
+await drill()
+throw new Error('the build must not run this script')
+`,
+      'app/how-it-works/page.tsx': `const sample = "import { durableAgent } from 'durable-harness'; durableAgent({})"
+export default function Page() { return <pre>{sample}</pre> }
+`,
+      'lib/docs.ts': `import { durableAgent } from 'durable-harness'
+export const sample = \`durableAgent({})\`
+`,
+      'scripts/helper.ts': `import { pi } from 'durable-harness/pi'
+export async function run() { return pi({ model: 'test' }) }
+`,
+    });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    const text = readFileSync(join(dir, FLOW), 'utf8');
+    expect(text).toContain('lib/mine');
+    for (const excluded of ['scripts/drill', 'how-it-works', 'lib/docs', 'scripts/helper']) expect(text).not.toContain(excluded);
+    expect((await routeOf(dir)).POST).toBeTypeOf('function');
+  });
+
+  it.each([
+    ["import { durableAgent as make } from 'durable-harness'", 'export const agent = make({})'],
+    ["import * as harness from 'durable-harness'", 'export default harness.durableAgent({})'],
+    ["const { durableAgent: make } = await import('durable-harness')", 'const agent = make({}); export { agent as custom }'],
+    ["const harness = require('durable-harness')", 'const agent = harness.durableAgent({}); export default agent'],
+    ["import { pi as make } from 'durable-harness/pi'", 'export const agent = (make({}) as Agent) satisfies Agent'],
+    ["import { codex } from 'durable-harness/codex'", 'const agent = codex({}); export const agents = [agent]'],
+    ["import { claudeCode } from 'durable-harness/claude-code'", 'export const agent = globalThis.agent ??= claudeCode({})'],
+    ["import { opencode } from 'durable-harness/opencode'", 'const agent = opencode({}); export function getAgent() { return agent }'],
+    ["import { durableAgent } from 'durable-harness'", 'const agent = durableAgent({}); const alias = agent; export { alias }'],
+    ["import { pi } from 'durable-harness/pi'", 'export const { GET, POST } = pi({}).chatRoute()'],
+  ])('finds real exported values with %s and %s', (imported, made) => {
+    const dir = project({ 'app/page.tsx': 'export default () => null', 'lib/agent.ts': `${imported}; ${made}` });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(readFileSync(join(dir, FLOW), 'utf8')).toContain('lib/agent');
+  });
+
+  it('keeps explicit agents as the escape hatch for side-effect registration and custom factories', () => {
+    const dir = project({
+      'app/page.tsx': 'export default () => null',
+      'lib/registration.ts': "import { durableAgent } from 'durable-harness'; durableAgent({})",
+      'lib/custom.ts': "import { makeAgent } from './factory'; makeAgent()",
+    });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(existsSync(join(dir, FLOW))).toBe(false);
+    applyDurableHarness({}, 'phase-production-build', dir, { agents: ['lib/registration.ts', 'lib/custom.ts'] });
+    const text = readFileSync(join(dir, FLOW), 'utf8');
+    expect(text).toContain('lib/registration');
+    expect(text).toContain('lib/custom');
+  });
+});
+
 describe('withDurableHarness, Pi with pi-durable: your own code on a World storage', () => {
   const PI_LIB = [
     "import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context'",
@@ -646,10 +705,10 @@ describe('withDurableHarness, fx agents, without the Workflow SDK', () => {
     expect(await (await (await routeOf(dir)).POST(delivery(LIBFX_TOPIC))).text()).toBe(`fx main: ${LIBFX_TOPIC}`);
   });
 
-  it('takes a listed module that makes both kinds of agent as both', () => {
+  it.each(['export const mine = durableAgent({})', 'durableAgent({})'])('takes a listed module that makes both kinds of agent as both: %s', (harness) => {
     const dir = project({
       ...STUBS,
-      'lib/agents.ts': "import { createFxAgent } from 'libfx'\nimport { durableAgent } from 'durable-harness'\nexport const fx = createFxAgent({})\nexport const mine = durableAgent({})\n",
+      'lib/agents.ts': `import { createFxAgent } from 'libfx'\nimport { durableAgent } from 'durable-harness'\nexport const fx = createFxAgent({})\n${harness}\n`,
     });
     applyDurableHarness({}, 'phase-production-build', dir, { agents: ['lib/agents.ts'] });
     const route = readFileSync(join(dir, FLOW), 'utf8');

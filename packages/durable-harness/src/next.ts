@@ -24,10 +24,14 @@ export interface DurableHarnessOptions {
   /**
    * The modules that make your agents, relative to the project: durable-harness
    * agents (`claudeCode()`, `pi()`, ...) and fx agents (libfx's
-   * `createFxAgent()`). Default: every source file that imports a harness
-   * subpath of durable-harness (for `durable-harness/pi-durable`, one that
-   * calls `resumeWith(`: it registers the opener a wake reopens sessions
-   * with) or calls `durableAgent(`, and every one that
+   * `createFxAgent()`). Default: modules that export an agent made at module
+   * scope with `durableAgent`, `claudeCode`, `codex`, `opencode` or `pi` from
+   * durable-harness (including import aliases and exported containers or
+   * accessors for that value). Calls inside factories, strings and comments
+   * do not count. A module that calls pi-durable's `resumeWith` at module
+   * scope is also included: it registers an opener, with or without an
+   * export. Use `agents` for custom factories or effect-only registrations.
+   * Automatic discovery also includes every module that
    * imports `createFxAgent` (from `libfx`, or a module of yours that
    * re-exports it) and calls it. A listed module that calls `createFxAgent(`
    * is an fx agent's (the first one listed is the one the fx route mounts);

@@ -68,6 +68,15 @@ const nextConfig: NextConfig = {
 export default withDurableHarness(nextConfig);
 ```
 
+`withDurableHarness` discovers modules that export agents created at module
+scope with `durableAgent`, `claudeCode`, `codex`, `opencode` or `pi`, and modules
+that register a pi-durable opener with `resumeWith`. A script that creates an
+agent for itself, an exported factory that creates one later, and code samples
+in strings or comments are excluded. Import aliases, default exports, export
+lists, and containers or accessors for an existing agent are supported.
+For custom factories or effect-only agent registration, list the modules
+explicitly: `withDurableHarness(nextConfig, { agents: ['lib/agent.ts'] })`.
+
 Choose your harness and framework in the
 [agent harnesses docs](https://vercel.com/docs/agent-harnesses).
 
