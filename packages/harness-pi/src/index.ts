@@ -470,7 +470,7 @@ class PiDrive {
 
 /** Replace only the interrupted turn's text, keeping its committed model steps. */
 function restartOf(state: SessionState): { type: 'restart'; text: string; parts: string[] } | undefined {
-  const models = state.effectOrder.filter((record) => record.name === 'model');
+  const models = state.effectOrder.slice(lastUnavailable(state) + 1).filter((record) => record.name === 'model');
   const finished = (record: typeof models[number]) =>
     record.status === 'completed' && record.output !== undefined &&
     !messageOf(record.output).content.some((part) => part.type === 'toolCall');

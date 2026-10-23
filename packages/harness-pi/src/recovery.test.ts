@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createAssistantMessageEventStream, createModels } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
-import { chatRoute, durableSessions, type Harness, liveResponse, QUEUE_PREFIX, vercelAnchors } from 'harness-world';
+import { chatRoute, durableSessions, type Harness, type HostTool, liveResponse, QUEUE_PREFIX, Unavailable, vercelAnchors } from 'harness-world';
 import { leasedWorld } from 'harness-world/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { piHarness, type PiHarnessOptions } from './index.ts';
@@ -52,6 +52,18 @@ function display(initial: string, live: LiveEvent[]): string {
   return live.reduce((text, event) => event.type === 'restart' ? event.text ?? '' : event.type === 'text' ? text + event.delta : text, initial);
 }
 
+/** Exercise existing sessions whose recorded inputs predate turn boundaries. */
+function legacyLog(harness: Harness): Harness {
+  return {
+    ...harness,
+    drive: (ctx) => harness.drive({ ...ctx, effect(key, options, run) {
+      if (options.name !== 'model') return ctx.effect(key, options, run);
+      const { turnStart: _, ...input } = options.input as Record<string, unknown>;
+      return ctx.effect(key, { ...options, input }, run);
+    } }),
+  };
+}
+
 /** Read through the crash point, retaining exactly the SSE cursor a client saw. */
 async function beforeCrash(response: Response) {
   const reader = response.body!.getReader();
@@ -94,14 +106,7 @@ describe('Pi cursor reconnect after a crash', () => {
       ...parts.map((text, i) => fauxAssistantMessage([fauxText(text), fauxToolCall('act', {}, { id: `call_${i}` })], { stopReason: 'toolUse' })),
     ]);
     let calls = 0;
-    const a = sessions({ ...first, tools: [tool], streamFn: (...args) => ++calls === kept + 2 ? interrupted() : first.streamFn(...args) }, (harness) => ({
-      ...harness,
-      drive: (ctx) => harness.drive({ ...ctx, effect(key, options, run) {
-        if (!legacy || options.name !== 'model') return ctx.effect(key, options, run);
-        const { turnStart: _, ...input } = options.input as Record<string, unknown>;
-        return ctx.effect(key, { ...options, input }, run);
-      } }),
-    }));
+    const a = sessions({ ...first, tools: [tool], streamFn: (...args) => ++calls === kept + 2 ? interrupted() : first.streamFn(...args) }, legacy ? legacyLog : undefined);
     world.registerHandler!(QUEUE_PREFIX, a.handler);
     const { sessionId } = await a.start({ prompt: 'earlier' });
     await world.broker.deliver()!.done;
@@ -232,6 +237,38 @@ describe('Pi cursor reconnect after a crash', () => {
     const sse = await response.text();
     expect(display(before.text, events(sse))).toBe('Before steering. After steering.');
     expect(events(sse).find((event) => event.type === 'restart')).toEqual({ type: 'restart', text: 'Before steering. ', parts: ['Before steering. '] });
+    expect(sse).toContain('event: end');
+  });
+
+  it('excludes an earlier unavailable turn, including in a legacy log', async () => {
+    const { world, sessions } = await setup();
+    const tool: HostTool = {
+      name: 'unavailable', description: 'Fail this turn.', inputSchema: Type.Object({}), replay: 'safe',
+      async execute(_input, io) {
+        io.ctx.halt?.(new Unavailable('offline fixture is unavailable', { code: 'module_missing' }));
+        throw io.signal.reason;
+      },
+    };
+    const first = model([fauxAssistantMessage([fauxText('Earlier failed turn. '), fauxToolCall('unavailable', {})], { stopReason: 'toolUse' })]);
+    let calls = 0;
+    const a = sessions({ ...first, tools: [tool], streamFn: (...args) => ++calls === 1 ? first.streamFn(...args) : interrupted() }, legacyLog);
+    world.registerHandler!(QUEUE_PREFIX, a.handler);
+    const { sessionId } = await a.start({ prompt: 'fail this turn' });
+    await world.broker.deliver()!.done;
+    expect((await a.inspect(sessionId)).effectOrder.some((effect) => effect.name === 'unavailable')).toBe(true);
+    const startIndex = await a.liveEnd(sessionId);
+    await a.send(sessionId, 'a new turn');
+    const delivery = world.broker.deliver()!;
+    const before = await beforeCrash(await liveResponse(a, sessionId, { startIndex }));
+    delivery.kill();
+
+    const b = sessions(model([fauxAssistantMessage(fauxText('Replacement answer.'))]));
+    world.registerHandler!(QUEUE_PREFIX, b.handler);
+    const response = await chatRoute(b, { authorize: 'public' }).GET(new Request(`http://local/api/chat?sessionId=${sessionId}&cursor=${before.cursor}`));
+    await until(async () => world.broker.deliver(delivery.messageId));
+    const sse = await response.text();
+    expect(display(before.text, events(sse))).toBe('Replacement answer.');
+    expect(events(sse).find((event) => event.type === 'restart')).toEqual({ type: 'restart', text: '', parts: [] });
     expect(sse).toContain('event: end');
   });
 });
