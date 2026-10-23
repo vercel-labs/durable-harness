@@ -50,6 +50,10 @@ In vercel.ts, call harnessFunctions() from durable-harness/vercel instead.`;
 /** `sandbox prepare [--region <region>]`. */
 async function sandboxCommand(argv: string[]): Promise<number> {
   const [sub, ...rest] = argv;
+  if (sub === '--help' || sub === '-h') {
+    console.log(USAGE);
+    return 0;
+  }
   if (sub !== 'prepare') {
     console.error(USAGE);
     return 1;
@@ -71,10 +75,14 @@ async function sandboxCommand(argv: string[]): Promise<number> {
 
 function main(argv: string[]): number | Promise<number> {
   const [command, ...rest] = argv;
+  if (command === '--help' || command === '-h') {
+    console.log(USAGE);
+    return 0;
+  }
   if (command === 'sandbox') return sandboxCommand(rest);
   if (command !== 'vercel-json') {
     console.error(USAGE);
-    return command === undefined || command === '--help' || command === '-h' ? 0 : 1;
+    return command === undefined ? 0 : 1;
   }
   const chat: string[] = [];
   const include: string[] = [];
