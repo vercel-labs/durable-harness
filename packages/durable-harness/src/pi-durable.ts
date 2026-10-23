@@ -680,6 +680,32 @@ function turnStream(
             // Text: the in-flight response's committed partial while it streams,
             // then the response once it is an entry. A new attempt of the call
             // (a rerun after a crash) starts over: a `rewind` says so first.
+            // A resumed request first records its old partial as an aborted
+            // assistant entry. Process entries before the current partial: both
+            // the replacement's partial and its final entry can arrive in one poll.
+            for (const [index, e] of snap.entries.entries()) {
+              if (seenEntries.has(e.id)) continue;
+              seenEntries.add(e.id);
+              if (e.kind !== 'pi.assistant') continue;
+              const message = e.model?.[0] as { content?: unknown; stopReason?: string } | undefined;
+              // Keep a terminal cancellation's partial; discard it only when
+              // the same generation task has restarted or written a later answer.
+              const superseded = message?.stopReason === 'aborted' && e.byTaskId && (
+                (snap.live?.generation && e.byTaskId === String(snap.live.run?.taskId)) ||
+                snap.entries.slice(index + 1).some((next) => next.kind === 'pi.assistant' && next.byTaskId === e.byTaskId)
+              );
+              if (superseded) {
+                if (live?.text) event({ type: 'rewind' });
+                live = undefined;
+                continue;
+              }
+              const text = textOf(message?.content);
+              const prior = live?.text ?? '';
+              if (!text.startsWith(prior)) event({ type: 'rewind' });
+              const rest = text.startsWith(prior) ? text.slice(prior.length) : text;
+              if (rest) event({ type: 'text', delta: rest });
+              live = undefined;
+            }
             const generation = snap.live?.generation;
             if (generation?.message) {
               const text = textOf(generation.message.content);
@@ -692,17 +718,6 @@ function turnStream(
                 event({ type: 'text', delta: text.slice(live.text.length) });
                 live.text = text;
               }
-            }
-            for (const e of snap.entries) {
-              if (seenEntries.has(e.id)) continue;
-              seenEntries.add(e.id);
-              if (e.kind !== 'pi.assistant') continue;
-              const text = textOf((e.model?.[0] as { content?: unknown } | undefined)?.content);
-              const prior = live?.text ?? '';
-              if (!text.startsWith(prior)) event({ type: 'rewind' });
-              const rest = text.startsWith(prior) ? text.slice(prior.length) : text;
-              if (rest) event({ type: 'text', delta: rest });
-              live = undefined;
             }
             for (const t of snap.tasks) {
               if (oldTasks.has(t.id) || t.kind !== 'pi.tool') continue;
