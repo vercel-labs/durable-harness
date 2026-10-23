@@ -98,6 +98,8 @@ interface ModelInput {
   /** Total messages in the request context (a replay divergence check). */
   contextLength: number;
   model: string;
+  /** First model call after `agent.prompt`, after the preceding `idle`. */
+  turnStart?: boolean;
 }
 
 /**
@@ -124,6 +126,7 @@ class PiDrive {
   /** Messages already recorded by committed model steps. */
   private recorded = 0;
   private modelOrdinal = 0;
+  private turnStart?: boolean;
   /** Why this drive must stop, set from inside Pi callbacks that cannot throw. */
   private stop?: Error;
   /** The drive-end hooks of its host tools (`afterDrive`), each once. */
@@ -173,6 +176,7 @@ class PiDrive {
     this.recorded = ended ? restore.length : restore.length - lastAppended;
     restore.push(...answered);
     this.modelOrdinal = ended ? models.length : Math.max(0, models.length - 1);
+    this.turnStart = !ended && last ? (last.input as ModelInput).turnStart : undefined;
 
     this.agent = new Agent({
       initialState: {
@@ -212,13 +216,18 @@ class PiDrive {
     this.ctx.signal.addEventListener('abort', onAbort);
     if (this.ctx.signal.aborted) onAbort();
     try {
-      if (models.length > 0 && !ended) await this.agent.continue();
+      if (models.length > 0 && !ended) {
+        const restart = restartOf(state);
+        if (restart) this.ctx.live(restart);
+        await this.agent.continue();
+      }
       this.throwIfStopped();
       for (;;) {
         await this.ctx.refresh();
         const next = this.ctx.pending().filter((s) => !this.handed.has(s.id));
         if (next.length === 0) break;
         for (const s of next) this.handed.set(s.id, s);
+        this.turnStart = true;
         await this.agent.prompt(next.map((s) => userMessage(s)));
         this.throwIfStopped();
       }
@@ -267,6 +276,8 @@ class PiDrive {
       m.role === 'user' ? this.claimSubmission(m) : []
     );
     const replaying = this.ctx.isMemoized(key);
+    const turnStart = this.turnStart;
+    this.turnStart = false;
 
     const run = async (): Promise<AssistantMessage> => {
       if (this.stop) throw this.stop;
@@ -280,6 +291,7 @@ class PiDrive {
             appended,
             contextLength: messages.length,
             model: `${model.provider}/${model.id}`,
+            ...(turnStart !== undefined ? { turnStart } : {}),
           } satisfies ModelInput,
         },
         async (io): Promise<ModelOutput> => {
@@ -454,6 +466,29 @@ class PiDrive {
   private onEvent(event: AgentEvent): void {
     if (event.type === 'agent_end') this.ctx.live({ type: 'idle' });
   }
+}
+
+/** Replace only the interrupted turn's text, keeping its committed model steps. */
+function restartOf(state: SessionState): { type: 'restart'; text: string; parts: string[] } | undefined {
+  const models = state.effectOrder.filter((record) => record.name === 'model');
+  const finished = (record: typeof models[number]) =>
+    record.status === 'completed' && record.output !== undefined &&
+    !messageOf(record.output).content.some((part) => part.type === 'toolCall');
+  const last = models.at(-1);
+  if (!last || finished(last)) return;
+  let parts: string[] = [];
+  for (const [i, record] of models.entries()) {
+    const { turnStart } = record.input as ModelInput;
+    // Older logs predate the explicit boundary: a tool-less answer ended
+    // their previous turn. New logs also retain text before a steer or
+    // follow-up that continued the same Agent invocation without an idle.
+    if (turnStart === true || (turnStart === undefined && i > 0 && finished(models[i - 1]!))) parts = [];
+    if (record.status !== 'completed' || record.output === undefined) continue;
+    const text = messageOf(record.output).content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+    if (text) parts.push(text);
+  }
+  // Pi's live text deltas concatenate across model calls without separators.
+  return { type: 'restart', text: parts.join(''), parts };
 }
 
 /** Stream events that count as the model's first output (TTFT). */
