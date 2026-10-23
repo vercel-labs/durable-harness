@@ -18,7 +18,7 @@
     "@earendil-works/pi-durable": "1.0.4",
     "@workflow/world": "catalog:",
     "@workflow/world-cloudflare": "file:./vendor/world-cloudflare",
-    "ai": "7.0.128",
+    "ai": "catalog:",
     "durable-ai-sdk": "workspace:*",
     "harness-world": "workspace:*",
     "harness-world-fx": "workspace:*",

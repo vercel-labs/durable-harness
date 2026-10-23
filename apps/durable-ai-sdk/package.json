@@ -15,10 +15,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/provider": "4.0.22",
+    "@ai-sdk/provider": "catalog:",
     "@workflow/world": "catalog:",
     "@workflow/world-local": "catalog:",
-    "ai": "7.0.128",
+    "ai": "catalog:",
     "durable-harness": "workspace:*",
     "harness-world": "workspace:*",
     "harness-world-hands": "workspace:*",

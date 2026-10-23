@@ -19,9 +19,11 @@ minimumReleaseAgeExclude:
   - eve
   - libfx
   - '@earendil-works/*'
-  - '@ai-sdk/gateway@4.0.104'
-  - ai@7.0.128
+  - '@ai-sdk/gateway@4.0.104 || 4.0.123'
+  - ai@7.0.150
   - '@vercel/agent-runs@0.0.1'
+  - '@ai-sdk/provider-utils@5.0.67'
+  - '@ai-sdk/provider@4.0.33'
 # Workflow SDK: the npm release of 2026-10-12 (workflow, @workflow/core and
 # @workflow/world-vercel 5.2.1, @workflow/world-local 5.1.1, @workflow/world,
 # @workflow/world-postgres, @workflow/next and @workflow/cli 5.0.4,
@@ -32,6 +34,8 @@ minimumReleaseAgeExclude:
 # overridden too, so one copy of each is installed (eve's and the CLI's
 # dependencies included).
 catalog:
+  ai: 7.0.150
+  '@ai-sdk/provider': 4.0.33
   # libfx, exactly: 0.0.14, the first stable with durability (libfx/durable-*),
   # what `npm i libfx` installs. Every fx lane, the fx (libfx durable) harness,
   # the CLI check and the examples use this one.
