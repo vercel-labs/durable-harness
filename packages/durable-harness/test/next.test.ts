@@ -416,6 +416,7 @@ export async function run() { return pi({ model: 'test' }) }
     ["import { opencode } from 'durable-harness/opencode'", 'const agent = opencode({}); export function getAgent() { return agent }'],
     ["import { durableAgent } from 'durable-harness'", 'const agent = durableAgent({}); const alias = agent; export { alias }'],
     ["import { pi } from 'durable-harness/pi'", 'export const { GET, POST } = pi({}).chatRoute()'],
+    ["import { durableAgent } from 'durable-harness'", 'export class Agents { static agent = durableAgent({}) }'],
   ])('finds real exported values with %s and %s', (imported, made) => {
     const dir = project({ 'app/page.tsx': 'export default () => null', 'lib/agent.ts': `${imported}; ${made}` });
     applyDurableHarness({}, 'phase-production-build', dir);

@@ -16,6 +16,9 @@ describe('automatic harness discovery', () => {
     'export const makeAgent = async () => durableAgent({})',
     'export default function makeAgent() { return durableAgent({}) }',
     'export class Factory { agent = durableAgent({}) }',
+    'export class Factory { static make() { return durableAgent({}) } }',
+    'export class Factory { static get agent() { return durableAgent({}) } }',
+    'export const factory = () => class { static agent = durableAgent({}) }',
     'export const factory = { make() { return durableAgent({}) } }',
     'const agent = durableAgent({}); export type Agent = typeof agent',
     'const agent = durableAgent({}); export const sample: typeof agent = null',
@@ -49,6 +52,10 @@ describe('automatic harness discovery', () => {
     'let agent; agent = durableAgent({}); export { agent }',
     'module.exports = durableAgent({})',
     'module.exports.agent = durableAgent({})',
+    'export class Agents { static agent = durableAgent({}) }',
+    'class Agents { static agent = durableAgent({}) }; export { Agents }',
+    'export class Agents { static #agent = durableAgent({}) }',
+    'export class Agents { static { durableAgent({}) } }',
     'const agent = durableAgent({}); exports.agent = agent',
   ])('follows actual calls and value exports: %s', (body) => {
     expect(harnessModule(CORE + body).agent).toBe(true);

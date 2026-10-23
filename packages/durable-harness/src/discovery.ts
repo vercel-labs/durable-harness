@@ -64,9 +64,11 @@ export function harnessModule(text: string): HarnessModule {
   return found;
 }
 
-/** Constructors and instance fields, like functions, do not run at import. */
+/** Static class initializers run at import; method bodies and instance fields do not. */
 function atModuleScope(path: NodePath): boolean {
-  return !path.findParent((parent) => parent.isFunction() || parent.isClass());
+  return !path.findParent((parent) => parent.isFunction() || (
+    (parent.isClassProperty() || parent.isClassPrivateProperty() || parent.isClassAccessorProperty()) && !parent.node.static
+  ));
 }
 
 /** Follow a value import, namespace member, or local alias to its module. */
