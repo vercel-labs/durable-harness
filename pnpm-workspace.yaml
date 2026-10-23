@@ -19,11 +19,9 @@ minimumReleaseAgeExclude:
   - eve
   - libfx
   - '@earendil-works/*'
-  - '@ai-sdk/gateway@4.0.104 || 4.0.123'
-  - ai@7.0.150
-  - '@vercel/agent-runs@0.0.1'
-  - '@ai-sdk/provider-utils@5.0.67'
-  - '@ai-sdk/provider@4.0.33'
+  - '@vercel/*'
+  - '@ai-sdk/*'
+  - ai
 # Workflow SDK: the npm release of 2026-10-12 (workflow, @workflow/core and
 # @workflow/world-vercel 5.2.1, @workflow/world-local 5.1.1, @workflow/world,
 # @workflow/world-postgres, @workflow/next and @workflow/cli 5.0.4,
