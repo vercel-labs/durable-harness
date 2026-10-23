@@ -71,6 +71,20 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: node scripts/check-public.mjs --commits "$BASE_SHA..$HEAD_SHA"
 
+  release-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Patch-only release policy and regression tests
+        run: pnpm check:changesets
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -87,10 +101,6 @@ jobs:
       # tools or NodeExecutionEnv, or mints the machine brand (docs/workspaces.md §6).
       - name: Host spawn lint
         run: node --test scripts/lint-host-spawn.test.mjs && node scripts/lint-host-spawn.mjs
-      # durable-harness stays on 0.0.x: a changeset may only be a patch, and only
-      # for durable-harness (docs/releasing.md). The Release workflow runs it too.
-      - name: Check the release line
-        run: pnpm check:changesets
       # The release gate on every change (the Release workflow runs it before a
       # publish too): durable-harness's build ships the relay bundle, no stub or
       # stand-in, Claude Code and Codex only on a branded machine, and the

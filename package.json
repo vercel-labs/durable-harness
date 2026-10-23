@@ -6,9 +6,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "changeset": "changeset",
-    "check:changesets": "node scripts/check-changesets.mjs",
-    "ci:publish": "pnpm --filter durable-harness build && pnpm --filter durable-harness check-dist && changeset publish",
-    "ci:version": "changeset version",
+    "check:changesets": "node --test scripts/check-changesets.test.mjs && node scripts/check-changesets.mjs",
+    "ci:publish": "pnpm check:changesets && pnpm --filter durable-harness build && pnpm --filter durable-harness check-dist && changeset publish",
+    "ci:version": "pnpm check:changesets && changeset version",
     "cli-check": "pnpm --filter harness-world-cli-check cli-check",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"

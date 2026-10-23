@@ -21,10 +21,18 @@ fails when
   changesets cannot be assembled into a release plan (which would break
   `changeset version` on main).
 
-CI runs it on every pull request (the `typecheck` job) and the Release
-workflow runs it before anything else. Leaving 0.0.x is a deliberate decision:
-change `LINE` in that script in the same pull request as the changeset that
-moves.
+CI runs it on every pull request in the separate `release-policy` job. The
+command includes regression tests that reject minor/major changesets and
+manually edited versions outside 0.0.x, including prereleases. It also accepts
+ordinary patch releases and consumed Version Packages pull requests. The Release
+workflow runs the same command before building. Both `pnpm ci:version` and
+`pnpm ci:publish` also run it before versioning or publishing.
+
+Leaving 0.0.x requires an **explicit human maintainer decision** and a separately
+reviewed policy change to the guard (`LINE`) and its tests. A request to ship or
+publish a release, or merging an automatically generated Version Packages pull
+request, does not authorize changing this policy. There is no automatic major or
+minor override.
 
 ## Adding a changeset
 

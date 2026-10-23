@@ -19,8 +19,9 @@
  * on main. A changeset naming a private package (every package but
  * durable-harness) fails too: it would release nothing.
  *
- * Leaving 0.0.x is a deliberate decision: change LINE below in the same pull
- * request as the changeset that moves to the new line.
+ * Leaving 0.0.x requires an explicit human maintainer decision and a separately
+ * reviewed policy change. A normal release request never authorizes changing
+ * LINE below or relaxing this guard (AGENTS.md, docs/releasing.md).
  *
  * Usage: node scripts/check-changesets.mjs (pnpm check:changesets). Writes a
  * summary to $GITHUB_STEP_SUMMARY when set.
