@@ -271,4 +271,48 @@ describe('Pi cursor reconnect after a crash', () => {
     expect(events(sse).find((event) => event.type === 'restart')).toEqual({ type: 'restart', text: '', parts: [] });
     expect(sse).toContain('event: end');
   });
+
+  it.each([false, true].flatMap((legacy) => [false, true].map((crash) => ({ legacy, crash }))))('excludes a terminal model failure from the next turn (legacy: $legacy, crash: $crash)', async ({ legacy, crash }) => {
+    const { world, sessions } = await setup();
+    let sideEffects = 0;
+    const tool = {
+      name: 'act', label: 'Act', description: 'Perform an action.', parameters: Type.Object({}), replay: 'never' as const,
+      async execute() {
+        sideEffects++;
+        return { content: [{ type: 'text' as const, text: 'done' }], details: undefined };
+      },
+    };
+    const first = model([
+      fauxAssistantMessage([fauxText('Earlier tool text. '), fauxToolCall('act', {}, { id: 'failed_turn_call' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage(fauxText(''), { stopReason: 'error', errorMessage: 'scripted terminal failure' }),
+      fauxAssistantMessage(fauxText('Fresh answer.')),
+    ]);
+    let calls = 0;
+    const a = sessions({ ...first, tools: [tool], modelAttempts: 1, streamFn: (...args) => ++calls > 2 && crash ? interrupted() : first.streamFn(...args) }, legacy ? legacyLog : undefined);
+    world.registerHandler!(QUEUE_PREFIX, a.handler);
+    const { sessionId } = await a.start({ prompt: 'act, then fail' });
+    await world.broker.deliver()!.done;
+    expect((await a.inspect(sessionId)).effects.get('model:1')).toMatchObject({ status: 'failed', error: { message: 'scripted terminal failure' } });
+    const response = await chatRoute(a, { authorize: 'public' }).POST(new Request('http://local/api/chat', { method: 'POST', body: JSON.stringify({ sessionId, text: 'a fresh prompt' }) }));
+    const delivery = world.broker.deliver()!;
+    if (!crash) {
+      await delivery.done;
+      const sse = await response.text();
+      expect(display('', events(sse))).toBe('Fresh answer.');
+      expect(events(sse).some((event) => event.type === 'restart')).toBe(false);
+      expect(sse).toContain('event: end');
+    } else {
+      const before = await beforeCrash(response);
+      delivery.kill();
+      const b = sessions({ ...model([fauxAssistantMessage(fauxText('Fresh answer.'))]), tools: [tool] });
+      world.registerHandler!(QUEUE_PREFIX, b.handler);
+      const reconnect = await chatRoute(b, { authorize: 'public' }).GET(new Request(`http://local/api/chat?sessionId=${sessionId}&cursor=${before.cursor}`));
+      await until(async () => world.broker.deliver(delivery.messageId));
+      const sse = await reconnect.text();
+      expect(display(before.text, events(sse))).toBe('Fresh answer.');
+      expect(events(sse).find((event) => event.type === 'restart')).toEqual({ type: 'restart', text: '', parts: [] });
+      expect(sse).toContain('event: end');
+    }
+    expect(sideEffects).toBe(1);
+  });
 });

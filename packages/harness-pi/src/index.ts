@@ -471,9 +471,11 @@ class PiDrive {
 /** Replace only the interrupted turn's text, keeping its committed model steps. */
 function restartOf(state: SessionState): { type: 'restart'; text: string; parts: string[] } | undefined {
   const models = state.effectOrder.slice(lastUnavailable(state) + 1).filter((record) => record.name === 'model');
+  // A committed model failure makes Pi emit agent_end/idle too: it is not
+  // interrupted work for the next prompt to recover.
   const finished = (record: typeof models[number]) =>
-    record.status === 'completed' && record.output !== undefined &&
-    !messageOf(record.output).content.some((part) => part.type === 'toolCall');
+    record.status === 'failed' || (record.status === 'completed' && record.output !== undefined &&
+    !messageOf(record.output).content.some((part) => part.type === 'toolCall'));
   const last = models.at(-1);
   if (!last || finished(last)) return;
   let parts: string[] = [];
