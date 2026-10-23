@@ -32,6 +32,7 @@ minimumReleaseAgeExclude:
 # overridden too, so one copy of each is installed (eve's and the CLI's
 # dependencies included).
 catalog:
+  eve: 0.83.0
   ai: 7.0.150
   '@ai-sdk/provider': 4.0.33
   # libfx, exactly: 0.0.14, the first stable with durability (libfx/durable-*),
