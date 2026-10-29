@@ -1,5 +1,11 @@
 # durable-harness
 
+## 0.0.2
+
+### Patch Changes
+
+- [#34](https://github.com/vercel-labs/durable-harness/pull/34) [`135dee5`](https://github.com/vercel-labs/durable-harness/commit/135dee512c6a7aebe710617426c4947c9d2ad498) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Require the latest Workflow SDK v5 Worlds: `@workflow/world` 5.0.5, `@workflow/world-local` 5.1.2, `@workflow/world-vercel` 5.2.3 and `@workflow/world-postgres` 5.0.5.
+
 ## 0.0.1
 
 ### Patch Changes
