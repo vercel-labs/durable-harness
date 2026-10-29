@@ -582,7 +582,8 @@ export function durableSessions(
         : harnesses[0];
       if (!harness) throw new Error(`harness-world: unknown harness "${startOptions.harness}"`);
       const workflowName = workflowNameFor(harness.name);
-      const runId = `wrun_${ulid()}`;
+      // The World's own id when it mints one (world-vercel tags the region its data lives in), as the SDK's start() does.
+      const runId = `wrun_${world.createRunId?.({}) ?? ulid()}`;
       const deploymentId = await world.getDeploymentId();
       await world.events.create(runId, {
         eventType: 'run_created',

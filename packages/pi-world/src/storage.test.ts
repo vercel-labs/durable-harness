@@ -84,6 +84,18 @@ describe("the session's recorded config", () => {
     }
   });
 
+  it("create mints the session's id with the World's createRunId when it has one", async () => {
+    const w = await sharedWorld();
+    const minted = ulid();
+    expect(await worldStorage.create(w)).toMatch(/^wrun_[0-9A-HJKMNP-TV-Z]{26}$/);
+    Object.assign(w, { createRunId: () => minted });
+    try {
+      expect(await worldStorage.create(w)).toBe(`wrun_${minted}`);
+    } finally {
+      delete (w as { createRunId?: unknown }).createRunId;
+    }
+  });
+
   it('an open that creates the session records it too; a session that recorded none has none', async () => {
     const w = await sharedWorld();
     const created = await worldStorage(w, `wrun_${ulid()}`, { config: { route: 'public' } });
