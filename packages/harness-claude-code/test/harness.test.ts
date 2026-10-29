@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
-import { type DriveContext, type DurableSessions, durableSessions, type HostTool, QUEUE_PREFIX, readDoc, type SessionState, UNAVAILABLE_STEP } from 'harness-world';
+import { type DriveContext, type DurableSessions, durableSessions, type HostTool, QUEUE_PREFIX, readDoc, type SessionState, UNAVAILABLE_STEP, vercelAnchors } from 'harness-world';
 import { filesFromState, readLedger, unsafeTools, workspaceTools } from 'harness-world-hands';
 import { existsSync, readFileSync } from 'node:fs';
 import { groupAlive, journalRecords, type SessionMachine, transcriptOf } from 'harness-world-process';
@@ -81,6 +81,10 @@ async function session(
     tools?: HostTool[];
     /** The platform (default a fresh one). */
     api?: FakeSandboxApi;
+    /** Vercel's anchors: another process's open effect is held there, whatever runs on this machine. */
+    vercel?: boolean;
+    /** The deliveries' log lines. */
+    log?: (message: string) => void;
   } = {}
 ) {
   const world = createWorld({ dataDir, recoverActiveRuns: opts.recover ?? false });
@@ -102,6 +106,8 @@ async function session(
       ...(opts.idleMs ? { idleMs: opts.idleMs } : {}),
     }),
     ...(opts.chaos ? { chaos: true, crash: opts.crash ?? (() => {}) } : {}),
+    ...(opts.vercel ? { anchors: vercelAnchors() } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
   });
   // The deliveries this process is running: a drive lives until its delivery's handler returns.
   let inflight = 0;
@@ -280,6 +286,28 @@ describe('claudeCodeHarness (scripted SDK, stand-in VM)', () => {
     await waitTurns(a.sessions, sessionId, 1);
     await a.sessions.send(sessionId, 'again');
     const state = await waitTurns(a.sessions, sessionId, 2);
+    expect(sdk.queries).toHaveLength(1);
+    expect(transcriptOf(state).map((r) => r.data).filter((e) => e.type === 'message').map((e) => (e as { text: string }).text)).toEqual(['echo: hello', 'echo: again']);
+  });
+
+  it('idleMs: a follow-up whose delivery lands on another process goes to the idle child, not to a second drive', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hwcc-'));
+    const sdk = fakeSdk();
+    const a = await session(dataDir, sdk, { idleMs: 4000, vercel: true });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    await waitTurns(a.sessions, sessionId, 1);
+    // Another instance of the app, on the same log and VMs: the follow-up's delivery lands there.
+    const lines: string[] = [];
+    const other = fakeSdk();
+    const b = await session(dataDir, other, { idleMs: 4000, vercel: true, api: a.api, log: (m) => lines.push(m) });
+    await b.sessions.send(sessionId, 'again');
+    const state = await waitTurns(a.sessions, sessionId, 2);
+    await b.drained();
+    // That instance leaves it to the idle drive: no second drive to fence the first off the VM.
+    expect(lines).toContain('skip: open work is held elsewhere');
+    expect(lines).not.toContain('in-band fence: armed');
+    expect(other.queries).toHaveLength(0);
     expect(sdk.queries).toHaveLength(1);
     expect(transcriptOf(state).map((r) => r.data).filter((e) => e.type === 'message').map((e) => (e as { text: string }).text)).toEqual(['echo: hello', 'echo: again']);
   });
