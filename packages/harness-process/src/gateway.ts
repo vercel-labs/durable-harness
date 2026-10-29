@@ -352,7 +352,10 @@ const ANTHROPIC_HEADERS = ['anthropic-version', 'anthropic-beta'] as const;
  * The `anthropic-beta` values Claude Code may send on: what 2.1.296 sends
  * (P0.7, logged through the tunnel and checked against the Gateway:
  * docs/sandbox-probes.md), and the earlier pins' values. Any other value is
- * dropped, not refused, and logged.
+ * dropped, not refused, and logged. With a model that takes an effort and
+ * per-turn settings (claude-opus-5-5), 2.1.296 also sends the last four, and
+ * a provider that checks them (the Anthropic API as `gatewayUrl`) answers 400
+ * to the `output_config` it sends without them.
  */
 export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
   'claude-code-20250219',
@@ -365,6 +368,10 @@ export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
   'token-efficient-tools-2025-02-19',
   'prompt-caching-2024-07-31',
   'context-1m-2025-08-07',
+  'mid-conversation-system-2026-04-07',
+  'per-turn-control-2026-07-01',
+  'mid-conversation-tool-changes-2026-07-01',
+  'effort-2025-11-24',
 ]);
 
 /** Top-level keys a Messages request may carry: no `mcp_servers`, `container`, `service_tier` or provider options. */

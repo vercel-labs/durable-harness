@@ -520,6 +520,15 @@ describe('gatewayHandler: headers', () => {
     expect(dropped).toEqual([['mcp-client-2025-04-04'], ['files-api-2025-04-14']]);
   });
 
+  it("passes on the betas Claude Code sends with a model that takes an effort and per-turn settings", async () => {
+    const gw = await gateway();
+    const { h, logs } = handler(gw.url);
+    const betas = ['claude-code-20250219', 'mid-conversation-system-2026-04-07', 'per-turn-control-2026-07-01', 'mid-conversation-tool-changes-2026-07-01', 'effort-2025-11-24'];
+    await drain((await h(req('/v1/messages', messages(), { 'anthropic-beta': betas.join(',') }), signal())).body);
+    expect(gw.seen[0]!.headers['anthropic-beta']).toBe(betas.join(','));
+    expect(logs.some((l) => l.message === 'dropped anthropic-beta values')).toBe(false);
+  });
+
   it('passes only allowlisted response headers back', async () => {
     const gw = await gateway();
     const { h } = handler(gw.url);
