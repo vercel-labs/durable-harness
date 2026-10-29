@@ -22,9 +22,9 @@ minimumReleaseAgeExclude:
   - '@vercel/*'
   - '@ai-sdk/*'
   - ai
-# Workflow SDK: the npm release of 2026-10-12 (workflow, @workflow/core and
-# @workflow/world-vercel 5.2.1, @workflow/world-local 5.1.1, @workflow/world,
-# @workflow/world-postgres, @workflow/next and @workflow/cli 5.0.4,
+# Workflow SDK: the latest v5 npm release (workflow, @workflow/core and
+# @workflow/world-vercel 5.2.3, @workflow/world-local 5.1.2, @workflow/world
+# and @workflow/world-postgres 5.0.5, @workflow/next and @workflow/cli 5.0.6,
 # @workflow/utils 5.0.2), exactly. It carries route-agnostic queue delivery
 # (vercel/workflow#4835: durable-harness's own queue namespace and route),
 # world-local's in-band writer fence across processes (#4834), and
@@ -39,32 +39,29 @@ catalog:
   # what `npm i libfx` installs. Every fx lane, the fx (libfx durable) harness,
   # the CLI check and the examples use this one.
   libfx: 0.0.14
-  '@workflow/astro': 5.0.4
-  '@workflow/builders': 5.0.4
-  '@workflow/cli': 5.0.4
-  '@workflow/core': 5.2.1
-  '@workflow/errors': 5.0.4
-  '@workflow/nest': 5.1.2
-  '@workflow/next': 5.0.4
-  '@workflow/nitro': 5.0.4
-  '@workflow/nuxt': 5.0.4
-  '@workflow/rollup': 5.0.4
+  '@workflow/astro': 5.0.6
+  '@workflow/builders': 5.0.6
+  '@workflow/cli': 5.0.6
+  '@workflow/core': 5.2.3
+  '@workflow/errors': 5.0.5
+  '@workflow/nest': 5.1.4
+  '@workflow/next': 5.0.6
+  '@workflow/nitro': 5.0.6
+  '@workflow/nuxt': 5.0.6
+  '@workflow/rollup': 5.0.6
   '@workflow/serde': 5.0.0
-  '@workflow/sveltekit': 5.0.4
+  '@workflow/sveltekit': 5.0.6
   '@workflow/swc-plugin': 5.0.1
   '@workflow/typescript-plugin': 5.0.0
   '@workflow/utils': 5.0.2
-  '@workflow/vite': 5.0.4
-  '@workflow/web': 5.0.4
-  '@workflow/world': 5.0.4
-  '@workflow/world-local': 5.1.1
-  '@workflow/world-postgres': 5.0.4
-  '@workflow/world-vercel': 5.2.1
-  'workflow': 5.2.1
+  '@workflow/vite': 5.0.6
+  '@workflow/web': 5.0.6
+  '@workflow/world': 5.0.5
+  '@workflow/world-local': 5.1.2
+  '@workflow/world-postgres': 5.0.5
+  '@workflow/world-vercel': 5.2.3
+  'workflow': 5.2.3
 overrides:
-  # @workflow/core 5.2.1 pins these exactly, at versions with published advisories; the patched ones, until it moves.
-  'devalue@5.9.2': 5.9.4
-  'nanoid@5.1.6': 5.1.16
   '@workflow/astro': 'catalog:'
   '@workflow/builders': 'catalog:'
   '@workflow/cli': 'catalog:'
