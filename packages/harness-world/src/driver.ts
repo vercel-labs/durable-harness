@@ -320,6 +320,15 @@ export interface DeliverMeta {
    */
   backstopped?: boolean;
   /**
+   * This delivery is of a message the queue held for its sender
+   * (send-and-hold, hold.ts): it runs in the process that sent it (the drive
+   * route's Function), not in the queue's consumer. Under its own `msg`
+   * anchor, like any delivery; but a harness that cannot run here hands the
+   * turn to the queue, as a `backstopped` direct drive does, rather than
+   * failing it.
+   */
+  held?: boolean;
+  /**
    * A log of this session the caller just refreshed or wrote (the drive
    * route hands over the one its submit used). The delivery starts from it
    * instead of listing the log again; it is refreshed incrementally later.
@@ -411,7 +420,7 @@ export async function deliver(
       }
       say('rerun: a delivery landed while this drove', { runId });
       // A fresh look, under the same anchor: nothing to hand over or fence.
-      round = { anchor, ...(meta.backstopped ? { backstopped: true } : {}) };
+      round = { anchor, ...(meta.backstopped ? { backstopped: true } : {}), ...(meta.held ? { held: true } : {}) };
     }
   } finally {
     releaseDrive(world, runId, claim);
@@ -854,10 +863,12 @@ async function deliverOpen(
   /** Set once this direct drive handed its turn to the queue (`Exit` `queue`). */
   let handedOver = false;
   /**
-   * A direct drive with a queue message behind it (`DeliverMeta.backstopped`):
-   * a harness that cannot run here is the queue's to try, not a failed turn.
+   * A direct drive with a queue message behind it (`DeliverMeta.backstopped`),
+   * or a held message's delivery in the process that sent it
+   * (`DeliverMeta.held`): a harness that cannot run here is the queue's to
+   * try, not a failed turn.
    */
-  const handsOver = meta.backstopped === true && anchor.k === 'deadline';
+  const handsOver = (meta.backstopped === true && anchor.k === 'deadline') || (meta.held === true && anchor.k === 'msg');
   /**
    * Whether a write of this drive failed in a way that leaves its outcome
    * unknown (it may land later): the drive then closes (a `close` fact)

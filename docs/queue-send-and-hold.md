@@ -72,25 +72,58 @@ while the sender runs: the same lock a delivery has, but taken at send time.
   queue client renews the lease while it runs, as it already renews a
   delivery's. When the sender dies, the lease lapses and the queue delivers
   the message, exactly as it redelivers a crashed delivery's.
-- **The World: hold on send.** `world.queue(name, payload, { hold: true })`
-  returns `{ messageId, lease }`. The lease carries `signal` (aborted if the
-  lease is lost), `release(delaySeconds)` and `deadline`: the same handle a
-  delivery's metadata would carry (`meta.lease`).
+- **The World: hold on send.** A World that supports it declares
+  `capabilities.experimental_queueHold`. `world.queue(name, payload, {
+  idempotencyKey, experimental_hold: {} })` (never with `delaySeconds`)
+  resolves with `experimental_held` when the queue holds the message, or
+  `experimental_notHeld: { reason }` when it doesn't. `held.consume(handler)`
+  runs the queue consumer's own handler on the message in the sender, exactly
+  as a pushed delivery runs (first delivery, lease renewed while it runs, ack
+  on resolve, retries on a rejection). world-vercel claims the message for the
+  consumer group `default`, the one the generated Next.js flow route
+  subscribes with.
 
-With both, `chatRoute` sends the turn's message held and drives under a `msg`
-anchor on that message instead of a deadline:
+With both, a `wake: 'backstop'` submit (`chatRoute`'s default `drive:
+'route'`, the demo's drive route) sends the turn's wake undelayed and held,
+under the key the companion would have had (`harness-world`'s `hold.ts`):
+
+- **Held.** The submit starts `held.consume(sessions.consume)` at once, under
+  the caller's `waitUntil`, from the log it just wrote (run-ahead included).
+  The drive runs under the held message's own `msg` anchor: no deadline
+  anchor, no companion, no deadline margin. The `drive()` the drive route
+  calls next waits for that delivery instead of driving. It is an ordinary
+  delivery to the kernel, so one drive per session per process still holds:
+  a held wake that lands while the session drives here acks, and the drive
+  under way runs once more.
+- **Not held** (any reason). Nothing runs here: the queue delivers the wake to
+  the flow route, one hop, as `drive: 'queue'` does. A run-ahead submission
+  sends one more wake once it is durable, so a delivery that came first and
+  found nothing to do does not leave it waiting. An `unsupported` answer (the
+  queue has send-and-hold off) sends the process back to the deadline path
+  for a few minutes before it asks again, so a World that declares the
+  capability ahead of its queue costs one hop, not one per turn.
+- **No capability** (world-local, world-postgres, the browser), or
+  `HARNESS_QUEUE_HOLD=0`: the deadline anchor and its delayed companion,
+  unchanged.
+
+What changes for a held turn:
 
 - No fixed 60 s. The request drives as long as its invocation lives (up to
-  its `maxDuration`), renewing the lease, so commands get their full time.
-- At the invocation's own limit it releases the message (`release(0)`), and
-  the flow route takes the turn over from the log, as a continuation does
-  today.
+  its `maxDuration`), the World renewing the lease, so commands get their
+  full time. At the invocation's own limit the drive hands over through a
+  continuation, as any queue delivery does.
 - A silent death is recovered when the lease lapses, which takes seconds,
-  where today it's the deadline plus 5 s.
-- `directDriveMs`, the deadline anchor's companion and the deadline margin
-  go away for the chat route. pi-durable's storage holds its own message the
-  same way, in place of renewing a deadline on each commit.
+  where with a deadline it's the deadline plus 5 s.
+- A harness that cannot run in the chat route's bundle hands the turn to the
+  queue at once (a continuation), as a deadline drive with a companion does.
+- A chaos submission (`sessions.chaos(..., { wake: 'backstop' })`) keeps its
+  companion: it arms a crash for a later drive and must not wake one now.
 
-Status: in progress in Vercel Queues and the Workflow SDK's World. Until it
-ships, the docs tell readers to pass `drive: 'queue'` for agents that run
-long commands.
+pi-durable's storage still renews its own deadline anchor and companion on
+every commit.
+
+Status: the World API is experimental (vercel/workflow#5159). It takes
+`@workflow/world-vercel` with it and Vercel Queues with send-and-hold
+enabled; before that the World declares no capability and the deadline path
+runs as before. Until then the docs tell readers to pass `drive: 'queue'` for
+agents that run long commands.

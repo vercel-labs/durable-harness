@@ -70,7 +70,12 @@ export interface ChatRouteOptions {
    *   under a deadline (`directDriveMs`, default 60 s), with one queue
    *   message delayed past that deadline behind it. If the invocation dies,
    *   that message resumes the turn in the flow route; if the turn finished,
-   *   it finds nothing to do.
+   *   it finds nothing to do. Where the World's queue holds a message for
+   *   its sender (Vercel Queues' send-and-hold), the turn's queue message
+   *   is sent undelayed and held instead, and this invocation runs it as
+   *   that message's delivery: no deadline, as long as the invocation
+   *   lives, and a lapsed hold redelivers it to the flow route. A message
+   *   the queue does not hold goes to the flow route, as with `queue`.
    * - `queue`: one queue message, delivered to the flow route now.
    */
   drive?: 'route' | 'queue';
