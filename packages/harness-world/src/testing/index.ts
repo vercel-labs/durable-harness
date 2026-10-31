@@ -158,6 +158,8 @@ export type HoldAnswer = 'unsupported' | 'deferred' | 'lost' | 'coalesced' | 'co
 /** What a held send's `consume` and `release` did (`Broker.holds()`). */
 export interface BrokerHold {
   messageId: string;
+  /** The consumer group the send claimed it for (`experimental_hold.consumerGroup`). */
+  consumerGroup?: string;
   consumed: boolean;
   released?: number;
   delivery?: LeasedDelivery;
@@ -185,7 +187,7 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
   };
   const world = gated(base, gate) as LeasedWorld;
 
-  const queue = async (queueName: string, payload: unknown, opts: { idempotencyKey?: string; delaySeconds?: number; experimental_hold?: object } = {}) => {
+  const queue = async (queueName: string, payload: unknown, opts: { idempotencyKey?: string; delaySeconds?: number; experimental_hold?: { consumerGroup?: string } } = {}) => {
     await gate();
     const hold = options.hold && opts.experimental_hold ? (typeof options.hold === 'function' ? options.hold(payload) : options.hold) : undefined;
     if (hold && opts.delaySeconds !== undefined) throw new TypeError('experimental_hold cannot be combined with delaySeconds');
@@ -209,7 +211,7 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
     // Held for the sender: not delivered while its lease runs. `consume`
     // starts the delivery (renewing it); a lapsed lease delivers as usual.
     message.availableAt = Date.now() + visibilityMs;
-    const record: BrokerHold = { messageId: message.messageId, consumed: false };
+    const record: BrokerHold = { messageId: message.messageId, consumed: false, ...(opts.experimental_hold?.consumerGroup ? { consumerGroup: opts.experimental_hold.consumerGroup } : {}) };
     holds.push(record);
     return {
       messageId: message.messageId,

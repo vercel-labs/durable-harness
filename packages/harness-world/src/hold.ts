@@ -52,7 +52,14 @@ export function worldHolds(world: World): boolean {
   return (world.capabilities as { experimental_queueHold?: unknown } | undefined)?.experimental_queueHold === true;
 }
 
-/** `HARNESS_QUEUE_HOLD=0`: never ask for a hold (see `DurableSessionsOptions.queueHold`). */
+/**
+ * What a consumer group may be named (`@workflow/world`'s
+ * `QueueHoldOptions.consumerGroup`; world-vercel refuses anything else
+ * before it sends).
+ */
+export const CONSUMER_GROUP = /^[A-Za-z0-9_-]+$/;
+
+/** `HARNESS_QUEUE_HOLD=0`: never ask for a hold (see `DurableSessionsOptions.queueHoldConsumerGroup`). */
 export function queueHoldDisabledByEnv(): boolean {
   return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.HARNESS_QUEUE_HOLD === '0';
 }
@@ -61,8 +68,11 @@ export function queueHoldDisabledByEnv(): boolean {
  * Send a plain session wake (what `wake()` sends with no options) undelayed,
  * asking the queue to hold it for this process. The key makes a resend, or
  * the plain wake a failed send falls back to, the same message.
+ * `consumerGroup` is the group that consumes the kernel's topic where this
+ * runs: the hold is claimed for it, so a hold that lapses is delivered to
+ * the Function that would have received the message anyway.
  */
-export async function wakeHeld(world: World, runId: string, idempotencyKey: string): Promise<HoldQueueResult> {
-  const queue = world.queue as (name: string, payload: unknown, opts: { idempotencyKey: string; experimental_hold: { visibilityTimeoutSeconds?: number } }) => Promise<HoldQueueResult>;
-  return queue.call(world, QUEUE_NAME, { runId, input: {} }, { idempotencyKey, experimental_hold: {} });
+export async function wakeHeld(world: World, runId: string, idempotencyKey: string, consumerGroup: string): Promise<HoldQueueResult> {
+  const queue = world.queue as (name: string, payload: unknown, opts: { idempotencyKey: string; experimental_hold: { consumerGroup: string; visibilityTimeoutSeconds?: number } }) => Promise<HoldQueueResult>;
+  return queue.call(world, QUEUE_NAME, { runId, input: {} }, { idempotencyKey, experimental_hold: { consumerGroup } });
 }

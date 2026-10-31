@@ -100,7 +100,7 @@ function spyQueue<W extends World>(world: W): { world: W; opts: Array<Record<str
   return { world: spied, opts };
 }
 
-async function setup(opts: { hold?: LeasedWorldOptions['hold']; harness?: Harness; flowHarness?: Harness; runAhead?: boolean; queueHold?: boolean } = {}) {
+async function setup(opts: { hold?: LeasedWorldOptions['hold']; harness?: Harness; flowHarness?: Harness; runAhead?: boolean; group?: string | null } = {}) {
   const base = createWorld({ dataDir: await mkdtemp(join(tmpdir(), 'hw-hold-')), recoverActiveRuns: false });
   worlds.push(base);
   const leased = leasedWorld(base, { visibilityMs: 300, secondMs: 50, ...(opts.hold ? { hold: opts.hold } : {}) });
@@ -109,7 +109,7 @@ async function setup(opts: { hold?: LeasedWorldOptions['hold']; harness?: Harnes
   const tag: string[] = [];
   const common = { anchors: vercelAnchors(), directDriveMs: 400, deadlineMarginMs: 100, contendedDelaySeconds: 1, marks: false, ...(opts.runAhead ? { runAhead: true } : {}) };
   const aLog: string[] = [];
-  const a = durableSessions({ world: spy.world, harness: opts.harness ?? harness(tag), ...common, log: (m) => aLog.push(m), ...(opts.queueHold !== undefined ? { queueHold: opts.queueHold } : {}) });
+  const a = durableSessions({ world: spy.world, harness: opts.harness ?? harness(tag), ...common, log: (m) => aLog.push(m), ...(opts.group === null ? {} : { queueHoldConsumerGroup: opts.group ?? 'default' }) });
   // Registered last, so it serves the queue.
   const b = durableSessions({ world: leased, harness: opts.flowHarness ?? opts.harness ?? harness(tag), ...common });
   const { sessionId } = await b.start({});
@@ -126,7 +126,7 @@ describe('send-and-hold: the wake is held and driven here', () => {
     const { a, b, broker, sessionId, tag, queueOpts } = await setup({ hold: 'held' });
     await a.send(sessionId, 'hi', 'prompt', { wake: 'backstop' });
     const [opts] = queueOpts;
-    expect(opts).toMatchObject({ idempotencyKey: expect.stringMatching(new RegExp(`^${sessionId}:`)), experimental_hold: {} });
+    expect(opts).toMatchObject({ idempotencyKey: expect.stringMatching(new RegExp(`^${sessionId}:`)), experimental_hold: { consumerGroup: 'default' } });
     expect(opts).not.toHaveProperty('delaySeconds');
     await a.drive(sessionId);
     expect(tag).toEqual(['ran:hi']);
@@ -316,8 +316,20 @@ describe('send-and-hold: not held, or not offered', () => {
     expect((await models(b, sessionId))[0]?.anchor?.k).toBe('deadline');
   });
 
-  it('queueHold: false keeps the companion on a World that holds', async () => {
-    const { a, broker, sessionId, tag, queueOpts } = await setup({ hold: 'held', queueHold: false });
+  it('the hold is claimed for the consumer group the deployment names', async () => {
+    const { a, broker, sessionId, queueOpts } = await setup({ hold: 'held', group: 'app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Dts' });
+    await a.send(sessionId, 'hi', 'prompt', { wake: 'backstop' });
+    await a.drive(sessionId);
+    expect(queueOpts[0]).toMatchObject({ experimental_hold: { consumerGroup: 'app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Dts' } });
+    expect(broker.holds()[0]?.consumerGroup).toBe('app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Dts');
+  });
+
+  it('a consumer group outside [A-Za-z0-9_-] is refused when the sessions are made', async () => {
+    await expect(setup({ hold: 'held', group: 'app/api/flow.ts' })).rejects.toThrow(TypeError);
+  });
+
+  it('no consumer group known: no hold, the companion on a World that holds', async () => {
+    const { a, broker, sessionId, tag, queueOpts } = await setup({ hold: 'held', group: null });
     await a.send(sessionId, 'hi', 'prompt', { wake: 'backstop' });
     await a.drive(sessionId);
     expect(tag).toEqual(['ran:hi']);

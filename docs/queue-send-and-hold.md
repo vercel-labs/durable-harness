@@ -74,14 +74,44 @@ while the sender runs: the same lock a delivery has, but taken at send time.
   the message, exactly as it redelivers a crashed delivery's.
 - **The World: hold on send.** A World that supports it declares
   `capabilities.experimental_queueHold`. `world.queue(name, payload, {
-  idempotencyKey, experimental_hold: {} })` (never with `delaySeconds`)
+  idempotencyKey, experimental_hold: { consumerGroup } })` (never with
+  `delaySeconds`)
   resolves with `experimental_held` when the queue holds the message, or
   `experimental_notHeld: { reason }` when it doesn't. `held.consume(handler)`
   runs the queue consumer's own handler on the message in the sender, exactly
   as a pushed delivery runs (first delivery, lease renewed while it runs, ack
-  on resolve, retries on a rejection). world-vercel claims the message for the
-  consumer group `default`, the one the generated Next.js flow route
-  subscribes with.
+  on resolve, retries on a rejection). The hold is claimed for one consumer
+  group (world-vercel's default is `default`): it must be the group that
+  consumes the topic, or a hold that lapses would be delivered to a group
+  nobody reads while the real consumer gets the message as well.
+
+## Which consumer group
+
+A held wake is claimed for the group of the Function that consumes
+`__harness_wkf_workflow_*`, which depends on where that Function's trigger is
+configured:
+
+| Setup | Flow Function's trigger | Consumer group |
+| --- | --- | --- |
+| Next.js without the Workflow SDK (`withDurableHarness`) | Build Output `config.json` next to the generated route | `default` |
+| Next.js with the Workflow SDK, trigger in `vercel.json` | the one `functions` entry on the topic | named after that key, e.g. `app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Djs` |
+| Next.js with the Workflow SDK, `harnessFunctions()` in `vercel.ts` | the generated route's key | named after that key |
+| Vercel Functions, `harnessFunctions()` in `vercel.ts` | `api/flow.ts` (or the `flow` given) | named after that key, e.g. `api_Sflow_Dts` |
+| Vercel Functions, `vercel.json` written ahead of time | nothing runs at build to record it | none: no hold, unless set |
+| The demo (`apps/demo`, its own `vercel.json`) | `app/.well-known/durable-harness/v1/flow/route.ts` | set in `lib/sessions.ts` from that key |
+| Anything else (routes of the app's own, several functions on the topic, a `vercel.ts` that writes its own trigger, a project of several services) | unknown | none: no hold |
+
+Vercel names a `vercel.json` / `vercel.ts` trigger's group after the
+function's `functions` key, as written (a glob too), escaped to
+`[A-Za-z0-9_-]` (`vercelTriggerConsumerGroup`, a copy of
+`@workflow/world-vercel`'s; `vercel.json` refuses a `consumer` of its own).
+The build records the group in `.durable-harness/queue-hold.json` and traces
+it into the chat routes and functions, which read it at run time.
+`DURABLE_HARNESS_QUEUE_HOLD_GROUP` names it outright, and an agent's
+`queueHoldConsumerGroup` (harness-world: `durableSessions({
+queueHoldConsumerGroup })`) comes before both. Where no group is known,
+nothing is held: the chat route drives under its deadline with a delayed
+companion, as on a World without send-and-hold.
 
 With both, a `wake: 'backstop'` submit (`chatRoute`'s default `drive:
 'route'`, the demo's drive route) sends the turn's wake undelayed and held,
@@ -102,8 +132,8 @@ under the key the companion would have had (`harness-world`'s `hold.ts`):
   queue has send-and-hold off) sends the process back to the deadline path
   for a few minutes before it asks again, so a World that declares the
   capability ahead of its queue costs one hop, not one per turn.
-- **No capability** (world-local, world-postgres, the browser), or
-  `HARNESS_QUEUE_HOLD=0`: the deadline anchor and its delayed companion,
+- **No capability** (world-local, world-postgres, the browser), no consumer
+  group known, or `HARNESS_QUEUE_HOLD=0`: the deadline anchor and its delayed companion,
   unchanged.
 
 What changes for a held turn:

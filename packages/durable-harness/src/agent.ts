@@ -17,6 +17,7 @@ import { unavailableHint } from './hint.ts';
 import { register } from './registry.ts';
 import { publicSandboxConfig, sandboxHarnessMark } from './sandbox-harness.ts';
 import { getWorld } from './world.ts';
+import { queueHoldConsumerGroup as defaultQueueHoldConsumerGroup } from './queue-hold.ts';
 
 /**
  * How a session's writes relate to the agent.
@@ -52,6 +53,17 @@ export interface AgentOptions
    * unless their session config declares `traceAudience`.
    */
   traceAudience?: 'public' | 'private' | 'unknown';
+  /**
+   * The queue consumer group of the function that consumes durable-harness's
+   * topic, which a chat route's held wake is claimed for (send-and-hold, see
+   * `ChatRouteOptions.drive`). Default: `DURABLE_HARNESS_QUEUE_HOLD_GROUP`,
+   * else what the build recorded (`withDurableHarness`; `harnessFunctions()`
+   * in `vercel.ts`), else none, and then nothing is held. Set it for a setup
+   * the build cannot read: a `vercel.json` flow function outside Next.js
+   * takes the name Vercel derives from its `functions` key
+   * (`vercelTriggerConsumerGroup('api/flow.ts')`).
+   */
+  queueHoldConsumerGroup?: string;
 }
 
 export interface ChatRouteOptions {
@@ -71,7 +83,8 @@ export interface ChatRouteOptions {
    *   message delayed past that deadline behind it. If the invocation dies,
    *   that message resumes the turn in the flow route; if the turn finished,
    *   it finds nothing to do. Where the World's queue holds a message for
-   *   its sender (Vercel Queues' send-and-hold), the turn's queue message
+   *   its sender (Vercel Queues' send-and-hold) and the flow route's consumer
+   *   group is known (`queueHoldConsumerGroup`), the turn's queue message
    *   is sent undelayed and held instead, and this invocation runs it as
    *   that message's delivery: no deadline, as long as the invocation
    *   lives, and a lapsed hold redelivers it to the flow route. A message
@@ -170,14 +183,15 @@ export function durableAgent(options: DurableAgentOptions): Agent {
 
 /** An agent over the kernel (`durableSessions`) and one harness. */
 export function kernelAgent(input: KernelAgentInput): Agent {
-  const { harness, traceAudience, world: given, durability = input.defaultDurability, defaultDurability: _, ...kernel } = input;
+  const { harness, traceAudience, world: given, durability = input.defaultDurability, defaultDurability: _, queueHoldConsumerGroup, ...kernel } = input;
   if (durability !== undefined && durability !== 'on' && durability !== 'strict') {
     throw new TypeError(`durable-harness: durability must be 'on' or 'strict' (got ${String(durability)})`);
   }
   let made: Promise<DurableSessions> | undefined;
   const real = (): Promise<DurableSessions> =>
-    (made ??= (given ? Promise.resolve(given) : getWorld()).then((world) =>
-      durableSessions({
+    (made ??= (given ? Promise.resolve(given) : getWorld()).then((world) => {
+      const holdGroup = queueHoldConsumerGroup ?? defaultQueueHoldConsumerGroup();
+      return durableSessions({
         marks: false,
         ...kernel,
         world,
@@ -189,8 +203,9 @@ export function kernelAgent(input: KernelAgentInput): Agent {
         // saying what to install or include (harness-world's unavailable.ts).
         unavailableHint,
         ...(durability !== undefined ? { runAhead: durability === 'on' } : {}),
-      })
-    ));
+        ...(holdGroup !== undefined ? { queueHoldConsumerGroup: holdGroup } : {}),
+      });
+    }));
   const sessions = lazySessions(real, traceAudience);
   const workflowName = workflowNameFor(harness.name);
   register({

@@ -16,7 +16,7 @@ import { type TetherOptions, tetherDelivery } from './tether.ts';
 import type { RunEnvelope, SubmissionPayload } from './fold.ts';
 import { fireOwnerChaos, type OwnerMessage, ownerCheck } from './owners.ts';
 import { harnessOf, workflowNameFor } from './names.ts';
-import { type HoldQueueResult, queueHoldDisabledByEnv, wakeHeld, worldHolds } from './hold.ts';
+import { CONSUMER_GROUP, type HoldQueueResult, queueHoldDisabledByEnv, wakeHeld, worldHolds } from './hold.ts';
 import { EXECUTION_CONTEXT } from './queue.ts';
 import { SessionLog } from './session-log.ts';
 import { closeRunStreams, JsonLinesWriter, kernelStreamNames, liveStreamName, type TailEntry, type TailOptions, tailJsonLines, tailJsonLinesAt } from './streams.ts';
@@ -63,17 +63,22 @@ export interface DurableSessionsOptions
    */
   route?: QueueRoute;
   /**
-   * Send a `wake: 'backstop'` submission's wake held (send-and-hold,
-   * hold.ts): undelayed, claimed for this process, and run here as a
-   * delivery of that message, under its own `msg` anchor, instead of a drive
-   * under a deadline with a delayed companion behind it. A wake that comes
-   * back not held is the queue's to deliver (one hop, as `wake: 'queue'`).
-   * Default: wherever the World declares `capabilities.experimental_queueHold`,
-   * unless `HARNESS_QUEUE_HOLD=0` in the environment. The queue claims the
-   * message for the consumer group `default`: turn it off where the kernel's
-   * topic is consumed by another group.
+   * The queue consumer group that consumes the kernel's topic
+   * (`__harness_wkf_workflow_*`) in this deployment. With it, on a World that
+   * declares `capabilities.experimental_queueHold`, a `wake: 'backstop'`
+   * submission's wake is sent held (send-and-hold, hold.ts): undelayed,
+   * claimed for this process under this group, and run here as a delivery
+   * of that message, under its own `msg` anchor, instead of a drive under a
+   * deadline with a delayed companion behind it. A wake that comes back not
+   * held is the queue's to deliver (one hop, as `wake: 'queue'`).
+   * Without it nothing is held: a hold claimed for the wrong group would be
+   * delivered again to the group that really consumes the topic. On Vercel
+   * that is `default` for a route whose trigger is in a Build Output
+   * `config.json`, and the name Vercel derives from the `functions` key for
+   * one configured in `vercel.json` / `vercel.ts`. `[A-Za-z0-9_-]+`.
+   * `HARNESS_QUEUE_HOLD=0` in the environment turns holds off.
    */
-  queueHold?: boolean;
+  queueHoldConsumerGroup?: string;
 }
 
 /** See `DurableSessionsOptions.route`. Resolve `{ timeoutSeconds }` to have the queue redeliver later. */
@@ -108,8 +113,8 @@ export interface SendOptions {
    *   the queue message, delayed past that deadline, is its backstop (its
    *   companion). If the drive died, the companion recovers the session; if
    *   it finished, the companion finds the turn answered and drops.
-   *   On a World whose queue holds messages for their sender
-   *   (`DurableSessionsOptions.queueHold`), the wake is sent undelayed and
+   *   On a World whose queue holds messages for their sender, with the
+   *   consumer group known (`DurableSessionsOptions.queueHoldConsumerGroup`), the wake is sent undelayed and
    *   held instead, and this process drives the session as that message's
    *   delivery (`drive()` then waits for it): no deadline, no companion. A
    *   wake the queue does not hold is delivered by the queue, and `drive()`
@@ -248,7 +253,11 @@ export function durableSessions(
   const harnesses = [options.harness].flat();
 
   const policy = anchorsOf(options);
-  const holds = options.queueHold ?? (worldHolds(world) && !queueHoldDisabledByEnv());
+  const holdGroup = options.queueHoldConsumerGroup;
+  if (holdGroup !== undefined && !CONSUMER_GROUP.test(holdGroup)) {
+    throw new TypeError(`harness-world: queueHoldConsumerGroup must match ${CONSUMER_GROUP} (got ${JSON.stringify(holdGroup)})`);
+  }
+  const holds = holdGroup !== undefined && worldHolds(world) && !queueHoldDisabledByEnv();
   /**
    * Until when this process sends no holds: a World can declare the
    * capability while its queue has send-and-hold off (`unsupported`), and
@@ -329,7 +338,7 @@ export function durableSessions(
     const done = (async () => {
       let result: HoldQueueResult;
       try {
-        result = await wakeHeld(world, sessionId, key);
+        result = await wakeHeld(world, sessionId, key, holdGroup!);
       } catch (err) {
         // It may have been enqueued (held, even): the plain wake under the
         // same key is the same message then, and the only one otherwise.
