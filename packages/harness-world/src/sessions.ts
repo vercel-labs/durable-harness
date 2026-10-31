@@ -16,6 +16,7 @@ import { type TetherOptions, tetherDelivery } from './tether.ts';
 import type { RunEnvelope, SubmissionPayload } from './fold.ts';
 import { fireOwnerChaos, type OwnerMessage, ownerCheck } from './owners.ts';
 import { harnessOf, workflowNameFor } from './names.ts';
+import { CONSUMER_GROUP, type HoldQueueResult, queueHoldDisabledByEnv, wakeHeld, worldHolds } from './hold.ts';
 import { EXECUTION_CONTEXT } from './queue.ts';
 import { SessionLog } from './session-log.ts';
 import { closeRunStreams, JsonLinesWriter, kernelStreamNames, liveStreamName, type TailEntry, type TailOptions, tailJsonLines, tailJsonLinesAt } from './streams.ts';
@@ -61,6 +62,23 @@ export interface DurableSessionsOptions
    * when telling takes a read). Asked before anything else.
    */
   route?: QueueRoute;
+  /**
+   * The queue consumer group that consumes the kernel's topic
+   * (`__harness_wkf_workflow_*`) in this deployment. With it, on a World that
+   * declares `capabilities.experimental_queueHold`, a `wake: 'backstop'`
+   * submission's wake is sent held (send-and-hold, hold.ts): undelayed,
+   * claimed for this process under this group, and run here as a delivery
+   * of that message, under its own `msg` anchor, instead of a drive under a
+   * deadline with a delayed companion behind it. A wake that comes back not
+   * held is the queue's to deliver (one hop, as `wake: 'queue'`).
+   * Without it nothing is held: a hold claimed for the wrong group would be
+   * delivered again to the group that really consumes the topic. On Vercel
+   * that is `default` for a route whose trigger is in a Build Output
+   * `config.json`, and the name Vercel derives from the `functions` key for
+   * one configured in `vercel.json` / `vercel.ts`. `[A-Za-z0-9_-]+`.
+   * `HARNESS_QUEUE_HOLD=0` in the environment turns holds off.
+   */
+  queueHoldConsumerGroup?: string;
 }
 
 /** See `DurableSessionsOptions.route`. Resolve `{ timeoutSeconds }` to have the queue redeliver later. */
@@ -95,6 +113,13 @@ export interface SendOptions {
    *   the queue message, delayed past that deadline, is its backstop (its
    *   companion). If the drive died, the companion recovers the session; if
    *   it finished, the companion finds the turn answered and drops.
+   *   On a World whose queue holds messages for their sender, with the
+   *   consumer group known (`DurableSessionsOptions.queueHoldConsumerGroup`), the wake is sent undelayed and
+   *   held instead, and this process drives the session as that message's
+   *   delivery (`drive()` then waits for it): no deadline, no companion. A
+   *   wake the queue does not hold is delivered by the queue, and `drive()`
+   *   does nothing. A `chaos` submission keeps the companion either way: it
+   *   must not wake a drive now.
    */
   wake?: 'queue' | 'backstop';
   /**
@@ -128,6 +153,8 @@ export interface UpdateDocOptions {
 
 /** How long a submit's log is handed to a following `drive` of the same session. */
 const RECENT_LOG_MS = 2_000;
+/** How long a process that was told holds are `unsupported` goes back to deadline drives before it asks again. */
+const HOLD_RETRY_MS = 5 * 60_000;
 /** Sessions whose last submit's log this process keeps for the next submit. */
 const MAX_CACHED_LOGS = 256;
 
@@ -162,7 +189,10 @@ export interface DurableSessions {
    * The drive holds no queue message, so it runs under a deadline anchor
    * (anchor.ts): the one a `send(..., { wake: 'backstop' })` just declared
    * for this session, else a new one, with a companion message sent behind
-   * it first where the World's queue outlives this process.
+   * it first where the World's queue outlives this process. After a send
+   * whose wake went out held (`SendOptions.wake`), the first `drive()` of
+   * that session drives nothing itself: it waits for the held message's
+   * delivery in this process, or returns at once if the queue did not hold it.
    */
   drive(sessionId: string, meta?: DeliverMeta): Promise<{ timeoutSeconds: number } | undefined>;
   /**
@@ -223,7 +253,26 @@ export function durableSessions(
   const harnesses = [options.harness].flat();
 
   const policy = anchorsOf(options);
-  const consume: DurableSessions['consume'] = async (message, meta) => {
+  const holdGroup = options.queueHoldConsumerGroup;
+  if (holdGroup !== undefined && !CONSUMER_GROUP.test(holdGroup)) {
+    throw new TypeError(`harness-world: queueHoldConsumerGroup must match ${CONSUMER_GROUP} (got ${JSON.stringify(holdGroup)})`);
+  }
+  const holds = holdGroup !== undefined && worldHolds(world) && !queueHoldDisabledByEnv();
+  /**
+   * Until when this process sends no holds: a World can declare the
+   * capability while its queue has send-and-hold off (`unsupported`), and
+   * each such send costs a queue hop where a deadline drive would have
+   * started at once. Asked again after a while, so turning it on reaches a
+   * running process.
+   */
+  let holdOffUntil = 0;
+  /**
+   * One queue message, as the World's queue handler delivers it. `extra` is
+   * what a held message's delivery in the process that sent it adds
+   * (`sendHeld`): the log its submit just wrote, and that it runs in the
+   * sender rather than the queue's consumer (`DeliverMeta.held`).
+   */
+  const consumeWith = async (message: unknown, meta: { attempt: number; queueName: string; messageId: string }, extra: Pick<DeliverMeta, 'log' | 'held'> = {}): Promise<unknown> => {
     const routed = options.route?.(message, meta);
     if (routed) {
       const result = await routed;
@@ -253,9 +302,83 @@ export function durableSessions(
       ...(typeof input?.continues === 'string' ? { continues: input.continues } : {}),
       ...(input?.companion ? { companion: true } : {}),
       ...(input?.companion && typeof input.guards === 'string' ? { guards: input.guards } : {}),
+      ...(extra.held ? { held: true } : {}),
+      ...(extra.log ? { log: extra.log } : {}),
     });
   };
+  const consume: DurableSessions['consume'] = (message, meta) => consumeWith(message, meta);
   const handler = world.createQueueHandler(QUEUE_PREFIX, consume);
+
+  /**
+   * Held drives a submit started (`sendHeld`), by session, for the `drive()`
+   * that follows the submit: it waits for the held drive instead of driving.
+   * Each is taken by one `drive()`; one that settled is kept for as long as
+   * a submit's log is (`RECENT_LOG_MS`), so a `drive()` that comes after a
+   * wake the queue did not hold still knows to leave it to the queue.
+   */
+  const paired = new Map<string, { done: Promise<void>; settledAt?: number }>();
+  const takePaired = (sessionId: string): Promise<void> | undefined => {
+    const entry = paired.get(sessionId);
+    paired.delete(sessionId);
+    if (!entry || (entry.settledAt !== undefined && Date.now() - entry.settledAt > RECENT_LOG_MS)) return undefined;
+    return entry.done;
+  };
+
+  /**
+   * A `wake: 'backstop'` submission's wake, sent held (hold.ts). Held: this
+   * process runs it now, through `held.consume`, as a delivery of that message
+   * (the queue's lease, renewed while it runs, is its anchor), starting from
+   * the log the submit just wrote. Not held: the queue delivers it; nothing
+   * runs here. `sent` resolves once the queue answered (and a held drive
+   * started), `done` once that drive is over.
+   */
+  const sendHeld = (sessionId: string, key: string, log: SessionLog): { sent: Promise<boolean>; done: Promise<void> } => {
+    let started!: (held: boolean) => void;
+    const sent = new Promise<boolean>((resolve) => (started = resolve));
+    const done = (async () => {
+      let result: HoldQueueResult;
+      try {
+        result = await wakeHeld(world, sessionId, key, holdGroup!);
+      } catch (err) {
+        // It may have been enqueued (held, even): the plain wake under the
+        // same key is the same message then, and the only one otherwise.
+        options.log?.('submit: the held wake failed; waking through the queue', { runId: sessionId, error: String(err) });
+        try {
+          await wake(world, sessionId, key);
+        } finally {
+          started(false);
+        }
+        return;
+      }
+      const held = result.experimental_held;
+      if (!held) {
+        const reason = result.experimental_notHeld?.reason ?? 'unsupported';
+        options.log?.('submit: the queue did not hold the wake; it delivers it', { runId: sessionId, reason });
+        if (reason === 'unsupported') holdOffUntil = Date.now() + HOLD_RETRY_MS;
+        started(false);
+        return;
+      }
+      let first = true;
+      const drive = held.consume((message, meta) => {
+        // The submit's log on the first run only: a retry in place reads afresh.
+        const extra: Pick<DeliverMeta, 'log' | 'held'> = { held: true, ...(first ? { log } : {}) };
+        first = false;
+        return consumeWith(message, meta, extra);
+      });
+      started(true);
+      await drive;
+    })();
+    void done.catch(() => started(false));
+    const entry: { done: Promise<void>; settledAt?: number } = { done };
+    void done.then(
+      () => (entry.settledAt = Date.now()),
+      () => (entry.settledAt = Date.now())
+    );
+    const at = Date.now();
+    for (const [k, v] of paired) if (v.settledAt !== undefined && at - v.settledAt > RECENT_LOG_MS) paired.delete(k);
+    paired.set(sessionId, entry);
+    return { sent, done };
+  };
 
   /**
    * What submits just wrote, by session, for a drive that follows at once
@@ -418,6 +541,10 @@ export function durableSessions(
     const inbox = log.state.inbox;
     if (!inbox) throw new Error(`harness-world: ${sessionId} has no inbox`);
     const t1 = markTime();
+    // Send-and-hold in place of the deadline and its companion (see
+    // `SendOptions.wake`). A chaos submission arms a crash for a drive that
+    // comes later: it wakes nothing now.
+    const held = sendOptions.wake === 'backstop' && holds && payload.kind !== 'chaos' && Date.now() >= holdOffUntil;
     // Run ahead: when the drive follows in this process (the
     // drive route), the submission goes into the log's pipeline with a
     // client-minted id (`cid`) and the drive places it at once; it becomes
@@ -447,9 +574,20 @@ export function durableSessions(
       // ack: if this process dies, or the write is lost, a companion still
       // comes, past the drive's deadline. The key is per cid, so it is sent
       // once; it drops once the turn is answered.
-      const direct = await directAnchor(sessionId, `${sessionId}:${cid}`);
-      const armed = direct.companion?.() ?? Promise.resolve();
-      remember(sessionId, { log, anchor: direct.anchor, backstopped: !!direct.companion });
+      // Held: the wake itself, undelayed, under the same key. Its drive here
+      // starts from this log, so it places the submission from the pipeline.
+      let armed: Promise<unknown>;
+      if (held) {
+        const hold = sendHeld(sessionId, `${sessionId}:${cid}`, log);
+        // Not held, the queue's delivery may come before the submission is
+        // durable, find nothing to do and ack: one more wake once it is.
+        const landed = hold.sent.then((wasHeld) => (wasHeld ? undefined : durable.then(() => wake(world, sessionId, `${sessionId}:${cid}:durable`), () => {})));
+        armed = Promise.all([hold.done, landed]);
+      } else {
+        const direct = await directAnchor(sessionId, `${sessionId}:${cid}`);
+        armed = direct.companion?.() ?? Promise.resolve();
+        remember(sessionId, { log, anchor: direct.anchor, backstopped: !!direct.companion });
+      }
       const live = marksEnabled(options) ? new JsonLinesWriter(world, sessionId, liveStreamName(sessionId)) : undefined;
       const after = durable.then(async () => {
         live?.write(mark(sessionId, 'submit', { id: cid, kind: payload.kind, durableSlot: log.state.eventCount, readMs: Math.round(t1 - t0), lagMs: Math.round(markTime() - t1), ahead: true, ...submitInfo }));
@@ -546,7 +684,15 @@ export function durableSessions(
     // Everything after the commit runs concurrently. Event ids are slots,
     // unique per run only: the wake key must name the run.
     let woken: Promise<void>;
-    if (sendOptions.wake === 'backstop') {
+    /** Held: once the queue answered (the drive itself is `woken`, not awaited by `send`). */
+    let answered: Promise<unknown> | undefined;
+    if (held) {
+      // The wake itself, undelayed and held, under the key the companion
+      // would have had; its drive here starts from the log this submit wrote.
+      const hold = sendHeld(sessionId, `${sessionId}:${id}`, log);
+      woken = hold.done;
+      answered = hold.sent;
+    } else if (sendOptions.wake === 'backstop') {
       // The log this submit just wrote, and the deadline its companion
       // stands behind: a drive of this session in this process starts from
       // them instead of listing the log again.
@@ -566,6 +712,9 @@ export function durableSessions(
         )
       );
       if (sendOptions.wake !== 'backstop') await woken;
+    } else if (answered) {
+      // Not the held drive: that is the turn (the `drive()` after this waits for it).
+      await Promise.all([answered, rest]);
     } else {
       await Promise.all([woken, rest]);
     }
@@ -623,6 +772,13 @@ export function durableSessions(
     drive: async (sessionId, meta = {}) => {
       const fresh = recent.get(sessionId);
       recent.delete(sessionId);
+      // The submit before this sent its wake held: that message's delivery
+      // in this process is this drive (or, not held, the queue's).
+      const heldDrive = meta.anchor ? undefined : takePaired(sessionId);
+      if (heldDrive) {
+        await heldDrive;
+        return undefined;
+      }
       const usable = fresh && Date.now() - fresh.at < RECENT_LOG_MS ? fresh : undefined;
       const log = meta.log ?? usable?.log;
       let anchor = meta.anchor ?? usable?.anchor;

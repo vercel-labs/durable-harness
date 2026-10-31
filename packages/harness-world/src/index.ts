@@ -77,6 +77,8 @@ export {
   Yield,
 } from './driver.ts';
 export type { Admission, ChaosDriveOptions, DeliverMeta, DriverOptions, RecoverOutput, WakeOptions } from './driver.ts';
+export { CONSUMER_GROUP, queueHoldDisabledByEnv, wakeHeld, worldHolds } from './hold.ts';
+export type { HeldDeliveryMeta, HeldMessage, HoldQueueResult, NotHeldReason } from './hold.ts';
 export { emptyState, fold, pendingSubmissions } from './fold.ts';
 export { EXECUTION_CONTEXT, LEGACY_QUEUE_PREFIX, PI_WAKE_QUEUE, QUEUE_NAMESPACE, QUEUE_TOPIC } from './queue.ts';
 export { recoverSessions, type RecoverSessionsOptions } from './recover.ts';

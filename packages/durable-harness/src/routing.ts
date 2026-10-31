@@ -99,9 +99,53 @@ export function flowFunctionConfig(consumers: FlowConsumers = { harness: true, f
     workflows: {
       maxDuration: FLOW_MAX_DURATION,
       experimentalTriggers: [
-        ...(consumers.harness ? [{ ...flowTrigger(), consumer: 'default' }] : []),
-        ...(consumers.fx ? [{ ...fxTrigger(), consumer: 'default' }] : []),
+        ...(consumers.harness ? [{ ...flowTrigger(), consumer: CONFIG_JSON_CONSUMER }] : []),
+        ...(consumers.fx ? [{ ...fxTrigger(), consumer: CONFIG_JSON_CONSUMER }] : []),
       ],
     },
   };
 }
+
+/**
+ * The consumer group of a queue trigger in a Build Output `config.json` (the
+ * flow route `withDurableHarness` writes at the Workflow SDK's path), as the
+ * Workflow SDK's own routes name theirs.
+ */
+export const CONFIG_JSON_CONSUMER = 'default';
+
+/**
+ * The consumer group Vercel gives a `queue/v2beta` trigger of a function
+ * configured in `vercel.json` / `vercel.ts` (which may not name one): the
+ * function's `functions` key (a path or a glob, as written), prefixed with
+ * `<service>~` in a project of several services, escaped to
+ * `[A-Za-z0-9_-]`: `_` is `__`, `/` is `_S`, `.` is `_D`, letters, digits and
+ * `-` stay, and any other character is `_` and its char code in uppercase
+ * hex (at least two digits). `api/flow.ts` is `api_Sflow_Dts`.
+ *
+ * A copy of `@workflow/world-vercel`'s `vercelTriggerConsumerGroup` (and of
+ * `@vercel/build-utils`' naming), until a released World carries it; a test
+ * pins it.
+ */
+export function vercelTriggerConsumerGroup(functionPattern: string, serviceName?: string): string {
+  const name = serviceName ? `${serviceName}~${functionPattern}` : functionPattern;
+  let out = '';
+  for (const c of name) {
+    if (c === '_') out += '__';
+    else if (c === '/') out += '_S';
+    else if (c === '.') out += '_D';
+    else if (/[A-Za-z0-9-]/.test(c)) out += c;
+    else out += `_${c.codePointAt(0)!.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return out;
+}
+
+/**
+ * Where a build records the consumer group of the function that consumes
+ * durable-harness's topic, for the functions that send held wakes (the chat
+ * routes) to read at run time: project-relative, traced into each of them.
+ * See `queueHoldConsumerGroup`.
+ */
+export const QUEUE_HOLD_FILE = '.durable-harness/queue-hold.json';
+
+/** Names the consumer group outright, over what the build recorded. */
+export const QUEUE_HOLD_GROUP_ENV = 'DURABLE_HARNESS_QUEUE_HOLD_GROUP';

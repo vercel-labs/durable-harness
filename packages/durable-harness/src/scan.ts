@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { harnessModule } from './discovery.ts';
 import { packageDir, resolves } from './native.ts';
-import { FLOW_MAX_DURATION, FLOW_ROUTE, flowTrigger, FX_ROUTE, fxTrigger, type GeneratedRoute, LIBFX_QUEUE_PREFIX, WORKFLOW_FLOW_ROUTE } from './routing.ts';
+import { CONFIG_JSON_CONSUMER, FLOW_MAX_DURATION, FLOW_ROUTE, flowTrigger, FX_ROUTE, fxTrigger, type GeneratedRoute, LIBFX_QUEUE_PREFIX, QUEUE_HOLD_FILE, QUEUE_TOPIC, vercelTriggerConsumerGroup, WORKFLOW_FLOW_ROUTE } from './routing.ts';
 
 /**
  * What a Next.js app makes, read from its source: the agents
@@ -272,6 +272,67 @@ export function triggerConfigured(projectDir: string, key: string, topic: string
   if (functions && Object.entries(functions).some(([pattern, f]) => matchesKey(pattern, key) && (f.experimentalTriggers ?? []).some((t) => t.type === 'queue/v2beta' && t.topic === topic))) return true;
   const ts = vercelCode(projectDir);
   return !!ts && (/\bharnessFunctions\s*\(/.test(code(ts)) || ts.includes(topic));
+}
+
+/**
+ * The consumer group of the function that consumes durable-harness's topic
+ * in a Next.js app, for held wakes (`queueHoldConsumerGroup`), or undefined
+ * when the build cannot tell (then nothing is held):
+ *
+ * - the flow route at the Workflow SDK's path (no Workflow SDK): its trigger
+ *   is in the `config.json` `withDurableHarness` writes, `default`;
+ * - the flow route at durable-harness's own path: the group Vercel derives
+ *   from its `functions` key (`configuredConsumerGroup`).
+ */
+export function nextHoldConsumerGroup(projectDir: string, plan: AppPlan): string | undefined {
+  if (plan.agents.length === 0) return undefined;
+  if (plan.layout === 'workflow') return CONFIG_JSON_CONSUMER;
+  return configuredConsumerGroup(projectDir, routeKey(projectDir, plan.app, FLOW_ROUTE));
+}
+
+/**
+ * The consumer group Vercel gives the function at `key` (a project-relative
+ * file) for its trigger on durable-harness's topic, from the project's
+ * config: the one `vercel.json` `functions` entry that subscribes the topic,
+ * when it names `key` (its pattern, as written, is what Vercel names the
+ * group after); else a `vercel.ts` that gives it with `harnessFunctions()`
+ * (whose key is `key`). Undefined when that is not what the config says:
+ * no entry, several, one for another file, a `vercel.ts` that writes its own
+ * trigger, or a project of several services (the group then carries a
+ * service name this cannot read).
+ */
+export function configuredConsumerGroup(projectDir: string, key: string): string | undefined {
+  const json = readText(join(projectDir, 'vercel.json'));
+  if (json && /"services"\s*:/.test(json)) return undefined;
+  const functions = vercelJsonFunctions(projectDir);
+  if (functions) {
+    const subscribed = Object.entries(functions).filter(([, f]) => (f.experimentalTriggers ?? []).some((t) => t.type === 'queue/v2beta' && t.topic === QUEUE_TOPIC));
+    if (subscribed.length === 1 && matchesKey(subscribed[0]![0], key)) return vercelTriggerConsumerGroup(subscribed[0]![0]);
+    if (subscribed.length > 0) return undefined;
+  }
+  const ts = vercelCode(projectDir);
+  if (!ts) return undefined;
+  const text = code(ts);
+  if (/\bservices\s*:/.test(text) || ts.includes(QUEUE_TOPIC) || !/\bharnessFunctions\s*\(/.test(text)) return undefined;
+  return vercelTriggerConsumerGroup(key);
+}
+
+/**
+ * Record the consumer group held wakes are claimed for (`QUEUE_HOLD_FILE`,
+ * read at run time by `queueHoldConsumerGroup`), or remove the record when
+ * there is none to give, so an earlier build's group is never read.
+ */
+export function writeQueueHold(projectDir: string, consumerGroup: string | undefined): void {
+  const file = join(projectDir, QUEUE_HOLD_FILE);
+  if (consumerGroup === undefined) {
+    rmSync(file, { force: true });
+    return;
+  }
+  const text = `${JSON.stringify({ consumerGroup }, null, 2)}\n`;
+  mkdirSync(dirname(file), { recursive: true });
+  const ignore = join(dirname(file), '.gitignore');
+  if (readText(ignore) !== '*\n') writeFileSync(ignore, '*\n');
+  if (readText(file) !== text) writeFileSync(file, text);
 }
 
 /** Whether a `functions` key (a path or a glob: `*`, `**`, `?`, `{a,b}`) names `file`. */

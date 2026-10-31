@@ -9,7 +9,9 @@
  *   lease while its handler runs (the queue library's renewal, not ours), a
  *   delivery that dies or freezes loses it, and the broker then redelivers
  *   the same messageId with `attempt + 1`. Storage and streams are the
- *   World's own.
+ *   World's own. With `hold`, it also holds messages for their sender
+ *   (send-and-hold: `capabilities.experimental_queueHold`, and
+ *   `experimental_hold` on `queue()`), as world-vercel does.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { World } from '@workflow/world';
@@ -116,6 +118,8 @@ export interface Broker {
   available(): BrokerMessage[];
   /** Every delivery so far. */
   deliveries(): LeasedDelivery[];
+  /** Every send that came back held (`LeasedWorldOptions.hold`). */
+  holds(): BrokerHold[];
   /** Deliver one message now (by id, or the next available one). */
   deliver(messageId?: string): LeasedDelivery | undefined;
   /**
@@ -137,6 +141,28 @@ export interface LeasedWorldOptions {
   resend?: 'same' | 'new';
   /** Retry delay after a handler throws (ms). Default 20. */
   retryMs?: number;
+  /**
+   * Declare `capabilities.experimental_queueHold`, and answer a send with
+   * `experimental_hold` this way (per message, or one answer for all):
+   * `'held'` returns `experimental_held` (the message waits out a lease of
+   * `visibilityMs` for its sender to `consume()` it, then is delivered as
+   * usual), any other reason returns `experimental_notHeld` and the message
+   * is delivered as usual. A repeated idempotency key is `duplicate`.
+   */
+  hold?: 'held' | HoldAnswer | ((payload: unknown) => 'held' | HoldAnswer);
+}
+
+/** A send-and-hold answer other than held. */
+export type HoldAnswer = 'unsupported' | 'deferred' | 'lost' | 'coalesced' | 'concurrency_limited' | 'error';
+
+/** What a held send's `consume` and `release` did (`Broker.holds()`). */
+export interface BrokerHold {
+  messageId: string;
+  /** The consumer group the send claimed it for (`experimental_hold.consumerGroup`). */
+  consumerGroup?: string;
+  consumed: boolean;
+  released?: number;
+  delivery?: LeasedDelivery;
 }
 
 export type LeasedWorld = World & { broker: Broker };
@@ -149,7 +175,9 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
   const messages: BrokerMessage[] = [];
   const keys = new Map<string, BrokerMessage>();
   const all: LeasedDelivery[] = [];
-  const handlers: Array<{ prefix: string; handler: (message: unknown, meta: { attempt: number; queueName: string; messageId: string }) => Promise<unknown> }> = [];
+  type Handler = (message: unknown, meta: { attempt: number; queueName: string; messageId: string; deliveryCount?: number }) => Promise<unknown>;
+  const handlers: Array<{ prefix: string; handler: Handler }> = [];
+  const holds: BrokerHold[] = [];
   const als = new AsyncLocalStorage<{ gate: Gate }>();
   let seq = 0;
 
@@ -159,11 +187,13 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
   };
   const world = gated(base, gate) as LeasedWorld;
 
-  const queue = async (queueName: string, payload: unknown, opts: { idempotencyKey?: string; delaySeconds?: number } = {}) => {
+  const queue = async (queueName: string, payload: unknown, opts: { idempotencyKey?: string; delaySeconds?: number; experimental_hold?: { consumerGroup?: string } } = {}) => {
     await gate();
+    const hold = options.hold && opts.experimental_hold ? (typeof options.hold === 'function' ? options.hold(payload) : options.hold) : undefined;
+    if (hold && opts.delaySeconds !== undefined) throw new TypeError('experimental_hold cannot be combined with delaySeconds');
     if (opts.idempotencyKey) {
       const existing = keys.get(opts.idempotencyKey);
-      if (existing) return { messageId: existing.messageId };
+      if (existing) return { messageId: existing.messageId, ...(hold ? { experimental_notHeld: { reason: 'duplicate' } } : {}) };
     }
     const message: BrokerMessage = {
       messageId: `msg_${String(++seq).padStart(6, '0')}`,
@@ -176,18 +206,46 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
     };
     messages.push(message);
     if (opts.idempotencyKey) keys.set(opts.idempotencyKey, message);
-    return { messageId: message.messageId };
+    if (!hold) return { messageId: message.messageId };
+    if (hold !== 'held') return { messageId: message.messageId, experimental_notHeld: { reason: hold } };
+    // Held for the sender: not delivered while its lease runs. `consume`
+    // starts the delivery (renewing it); a lapsed lease delivers as usual.
+    message.availableAt = Date.now() + visibilityMs;
+    const record: BrokerHold = { messageId: message.messageId, consumed: false, ...(opts.experimental_hold?.consumerGroup ? { consumerGroup: opts.experimental_hold.consumerGroup } : {}) };
+    holds.push(record);
+    return {
+      messageId: message.messageId,
+      experimental_held: {
+        messageId: message.messageId,
+        leaseExpiresAt: new Date(message.availableAt),
+        async consume(handler: Handler) {
+          if (record.consumed || record.released !== undefined) throw new Error('leasedWorld: a held message is consumed once, and not after release');
+          record.consumed = true;
+          const delivery = deliver(message.messageId, { handler, held: true });
+          if (!delivery) return; // The lease lapsed first: the queue delivers it.
+          record.delivery = delivery;
+          const result = await delivery.done;
+          if (delivery.state === 'failed') throw result;
+        },
+        async release(delaySeconds = 0) {
+          record.released = delaySeconds;
+          message.availableAt = Date.now() + delaySeconds * secondMs;
+        },
+      },
+    };
   };
 
   const isAvailable = (m: BrokerMessage, now = Date.now()) =>
     !m.acked && m.availableAt <= now && (!m.holder || (m.leaseUntil !== undefined && m.leaseUntil <= now));
 
-  function deliver(messageId?: string): LeasedDelivery | undefined {
+  function deliver(messageId?: string, as: { handler?: Handler; held?: boolean } = {}): LeasedDelivery | undefined {
     const now = Date.now();
     const message = messageId ? messages.find((m) => m.messageId === messageId) : messages.find((m) => isAvailable(m, now));
-    if (!message || !isAvailable(message, now)) return undefined;
+    if (!message) return undefined;
+    // A held message's sender consumes it within its lease, before anyone else may.
+    if (as.held ? message.acked || message.attempt > 0 || message.availableAt <= now : !isAvailable(message, now)) return undefined;
     // The latest registration for a prefix wins (as world-local's registerHandler).
-    const handler = handlers.findLast((h) => message.queueName.startsWith(h.prefix));
+    const handler = as.handler ? { handler: as.handler } : handlers.findLast((h) => message.queueName.startsWith(h.prefix));
     if (!handler) throw new Error(`leasedWorld: no handler for ${message.queueName}`);
     // A holder whose lease lapsed has lost the message: it can no longer ack
     // it. It stands for another instance (a frozen one, cut off), so this
@@ -212,7 +270,7 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
       if (frozen) await frozen;
       if (dead) return forever();
     };
-    const meta = { attempt: message.attempt, queueName: message.queueName, messageId: message.messageId };
+    const meta = { attempt: message.attempt, deliveryCount: message.attempt, queueName: message.queueName, messageId: message.messageId };
     const delivery: LeasedDelivery & { lost(): void } = {
       messageId: message.messageId,
       queueName: message.queueName,
@@ -283,7 +341,8 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
     sent: () => [...messages],
     available: () => messages.filter((m) => isAvailable(m)),
     deliveries: () => [...all],
-    deliver,
+    holds: () => [...holds],
+    deliver: (messageId) => deliver(messageId),
     async drain(o = {}) {
       const started: LeasedDelivery[] = [];
       const end = Date.now() + (o.timeoutMs ?? 5000);
@@ -308,6 +367,7 @@ export function leasedWorld(base: World, options: LeasedWorldOptions = {}): Leas
     get(t, key) {
       if (key === 'broker') return broker;
       if (key === 'queue') return queue;
+      if (key === 'capabilities' && options.hold) return { ...(t as World).capabilities, experimental_queueHold: true };
       if (key === 'createQueueHandler') {
         return (prefix: string, handler: (typeof handlers)[number]['handler']) => {
           handlers.push({ prefix, handler });

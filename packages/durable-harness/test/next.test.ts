@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyDurableHarness } from '../src/next.ts';
-import { FLOW_ROUTE, flowFunctionConfig, flowTrigger, FX_ROUTE, fxTrigger, LIBFX_QUEUE_PREFIX, LIBFX_TOPIC, WORKFLOW_FLOW_ROUTE } from '../src/routing.ts';
+import { queueHoldConsumerGroup } from '../src/queue-hold.ts';
+import { FLOW_ROUTE, flowFunctionConfig, flowTrigger, FX_ROUTE, fxTrigger, LIBFX_QUEUE_PREFIX, LIBFX_TOPIC, QUEUE_HOLD_FILE, WORKFLOW_FLOW_ROUTE } from '../src/routing.ts';
 import { fxAgentNames, routesByName, workflowSdkIn } from '../src/scan.ts';
 
 /** The flow route at the Workflow SDK's path (an app without the Workflow SDK), and its config.json. */
@@ -123,7 +124,8 @@ describe('withDurableHarness, in an app without the Workflow SDK: zero config', 
       'node_modules/@openai/codex/index.js': '',
     });
     const config = applyDurableHarness({}, 'phase-production-build', dir);
-    expect(config.outputFileTracingIncludes).toBeUndefined();
+    // Only the consumer group held wakes are claimed for, into the chat route.
+    expect(config.outputFileTracingIncludes).toEqual({ '/api/chat': ['./.durable-harness/queue-hold.json'] });
     expect(config.serverExternalPackages).toContain('@anthropic-ai/claude-agent-sdk');
     expect(config.serverExternalPackages).not.toContain('@openai/codex');
   });
@@ -205,7 +207,66 @@ describe('withDurableHarness, in an app without the Workflow SDK: zero config', 
     expect(config.serverExternalPackages?.slice(0, 2)).toEqual(['sharp', 'durable-harness']);
     expect(config.outputFileTracingIncludes?.['/x']).toEqual(['./y']);
     expect(config.outputFileTracingIncludes?.[WORKFLOW_FLOW_ROUTE]).toEqual(['./node_modules/tree-sitter-bash/tree-sitter-bash.wasm']);
-    expect(config.outputFileTracingIncludes?.['/api/chat']).toEqual(['./node_modules/tree-sitter-bash/tree-sitter-bash.wasm']);
+    expect(config.outputFileTracingIncludes?.['/api/chat']).toEqual(['./node_modules/tree-sitter-bash/tree-sitter-bash.wasm', './.durable-harness/queue-hold.json']);
+  });
+});
+
+describe('withDurableHarness: the consumer group a chat route holds its wakes for', () => {
+  const recorded = (dir: string) => (existsSync(join(dir, QUEUE_HOLD_FILE)) ? (json(dir, QUEUE_HOLD_FILE) as { consumerGroup: string }).consumerGroup : undefined);
+  const WORKFLOW_SDK = { 'package.json': JSON.stringify({ name: 'app', dependencies: { workflow: '5.2.1' } }) };
+
+  it("the generated route at the Workflow SDK's path, its trigger in config.json: default", () => {
+    const dir = project(QUICK_START);
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(recorded(dir)).toBe('default');
+    expect(readFileSync(join(dir, '.durable-harness/.gitignore'), 'utf8')).toBe('*\n');
+    // Read at run time, from the project (a Vercel Function's working directory).
+    expect(queueHoldConsumerGroup({}, dir)).toBe('default');
+  });
+
+  it("the route at durable-harness's own path, its trigger in vercel.json: the group Vercel names after its functions key", () => {
+    const dir = project({ ...QUICK_START, ...WORKFLOW_SDK, 'vercel.json': JSON.stringify({ functions: { [OWN_FLOW]: FLOW_ENTRY } }) });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(recorded(dir)).toBe('app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Djs');
+  });
+
+  it('a glob key is the group as written', () => {
+    const dir = project({ ...QUICK_START, ...WORKFLOW_SDK, 'vercel.json': JSON.stringify({ functions: { 'app/.well-known/durable-harness/v1/flow/route.*': FLOW_ENTRY } }) });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(recorded(dir)).toBe('app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_D_2A');
+  });
+
+  it("vercel.ts with harnessFunctions(): the route's own key", () => {
+    const dir = project({ ...QUICK_START, ...WORKFLOW_SDK, 'vercel.ts': "import { harnessFunctions } from 'durable-harness/vercel'\nexport const config = { functions: harnessFunctions() }\n" });
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(recorded(dir)).toBe('app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Djs');
+  });
+
+  it.each([
+    ['no trigger at all', {}],
+    ['a trigger on another function', { 'vercel.json': JSON.stringify({ functions: { 'app/api/queue/route.ts': FLOW_ENTRY } }) }],
+    ['two functions on the topic', { 'vercel.json': JSON.stringify({ functions: { [OWN_FLOW]: FLOW_ENTRY, 'app/api/queue/route.ts': FLOW_ENTRY } }) }],
+    ['a vercel.ts that writes its own trigger', { 'vercel.ts': "export const config = { functions: { 'x': { experimentalTriggers: [{ type: 'queue/v2beta', topic: '__harness_wkf_workflow_*' }] } } }\n" }],
+    ['several services', { 'vercel.json': JSON.stringify({ services: { web: {} }, functions: { [OWN_FLOW]: FLOW_ENTRY } }) }],
+  ])('unknown (%s): nothing recorded, so nothing is held', (_, files) => {
+    process.env.DURABLE_HARNESS_SKIP_TRIGGER_CHECK = '1';
+    const dir = project({ ...QUICK_START, ...WORKFLOW_SDK, ...files, '.durable-harness/queue-hold.json': JSON.stringify({ consumerGroup: 'stale' }) });
+    const config = applyDurableHarness({}, 'phase-production-build', dir);
+    expect(recorded(dir)).toBeUndefined();
+    expect(config.outputFileTracingIncludes?.['/api/chat']).toBeUndefined();
+    expect(queueHoldConsumerGroup({}, dir)).toBeUndefined();
+  });
+
+  it('routes of the app\'s own (flowRoute: false): nothing recorded', () => {
+    const dir = project(QUICK_START);
+    applyDurableHarness({}, 'phase-production-build', dir, { flowRoute: false });
+    expect(recorded(dir)).toBeUndefined();
+  });
+
+  it('DURABLE_HARNESS_QUEUE_HOLD_GROUP names it over the record', () => {
+    const dir = project(QUICK_START);
+    applyDurableHarness({}, 'phase-production-build', dir);
+    expect(queueHoldConsumerGroup({ DURABLE_HARNESS_QUEUE_HOLD_GROUP: 'mine' }, dir)).toBe('mine');
   });
 });
 
