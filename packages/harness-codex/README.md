@@ -214,6 +214,17 @@ the same live stream. Sends go to the server, which drives.
 `sandbox`, `host`, `cwd`, `bin`, `env`, `keepSessionDir` and `workspaceNote`
 are gone and throw, naming what replaced them.
 
+### Models
+
+Codex's requests carry its base instructions and developer messages of its
+own (and `instructions`, as one more), and they keep the model's reasoning in
+the conversation. Some providers refuse that combination: with
+`alibaba/qwen3.8-max`, which the Gateway routes to Fireworks, the request after
+the first tool call fails with "System message must be at the beginning", and
+the turn ends failed. Leaving `instructions` unset doesn't avoid it, because
+Codex adds a developer message of its own. Use another model with Codex until
+the Gateway accepts these requests for it.
+
 ## What a crash costs
 
 - **The model call in flight.** Its partial output is not in the log; Codex

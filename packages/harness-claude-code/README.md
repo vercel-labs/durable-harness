@@ -177,6 +177,18 @@ Removed when the CLI moved into the VM: `cwd`, `host`, `env` and
 `workspaceNote` (`durable-harness` throws a `TypeError` naming the
 replacement: `workspace: sandbox()`, `sandbox({ env })`).
 
+### Models
+
+Claude Code's requests carry more than one system message (its system prompt
+in blocks, and system messages it adds during the conversation), and they keep
+the model's thinking in the conversation. Some providers refuse that
+combination: with `alibaba/qwen3.8-max`, which the Gateway routes to Fireworks,
+the request after the first tool call fails with "System message must be at
+the beginning", and the turn ends failed. Turning thinking off doesn't help
+there, because that provider also refuses a request that disables thinking
+and offers tools. Use another model with Claude Code until the Gateway
+accepts these requests for it.
+
 ## What is in the log
 
 | Record | Written as | Key |

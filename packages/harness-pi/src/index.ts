@@ -47,6 +47,12 @@ export interface PiHarnessOptions {
    * interrupted call; it defaults to `'never'`.
    */
   tools?: (AgentTool<any> | HostTool)[];
+  /**
+   * Default `'off'`, which asks the provider to disable thinking. Some
+   * reasoning models refuse that on some providers: `alibaba/qwen3.8-max`
+   * routed to Fireworks fails every request that offers tools with
+   * "Disabling thinking is not supported". Set a level (`'medium'`) for them.
+   */
   thinkingLevel?: ThinkingLevel;
   /** Attempts per model call when the provider returns an error. */
   modelAttempts?: number;
