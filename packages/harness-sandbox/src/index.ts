@@ -9,8 +9,8 @@
  */
 export { apiErrorOf, ApiConflict, resolveProjectId, vercelSandboxApi } from './api.ts';
 export type { ApiCredentials, BootSource, CleanupApi, CreateSandbox, DriveInfo, RunResult, SandboxApi, SandboxNetworkPolicy, VmHandle, VmLayout, VmStatus } from './api.ts';
-export { cleanupIdle, deleteSession, rateLimiter, SESSION_NAME, SessionInUse } from './cleanup.ts';
-export type { CleanupOptions, CleanupResult, CleanupSkip, DeletedSession, DeleteOptions, IfIdle } from './cleanup.ts';
+export { cleanupIdle, deleteSession, rateLimiter, SESSION_NAME, SessionInUse, stopSession } from './cleanup.ts';
+export type { CleanupOptions, CleanupResult, CleanupSkip, DeletedSession, DeleteOptions, IfIdle, StoppedSession } from './cleanup.ts';
 export { baseName, baseRecipe, CLAUDE_CLI, cliPath, CODEX_CLI, devRelayArtifact, prepareBase } from './base.ts';
 export type { BaseRecipe, PinnedCli, PrepareBaseOptions, RelayArtifact } from './base.ts';
 export { defaultRegion, sessionName } from './names.ts';

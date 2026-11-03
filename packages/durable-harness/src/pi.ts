@@ -5,7 +5,7 @@ import { type PiHarnessOptions, piHarness as rawPiHarness } from 'harness-world-
 import { gatewayCredential } from 'harness-world-process';
 import { type Agent, type AgentOptions, kernelAgent, splitOptions } from './agent.ts';
 import { resolveEnvironment } from './environments.ts';
-import { markSandboxHarness, markSandboxTools, sandboxToolsMark } from './sandbox-harness.ts';
+import { markSandboxHarness, markSandboxTools, sandboxMarkOf, sandboxToolsMark } from './sandbox-harness.ts';
 import type { Workspace } from './workspace.ts';
 
 /** pi-ai's provider id for the Vercel AI Gateway. */
@@ -163,7 +163,7 @@ export function createCodingTools(workspace: Workspace): HostTool[] {
   const env = resolveEnvironment(workspace);
   // The kernel's attach (harness-world-sandbox/cli) loads on the first attach; the factory and `@vercel/sandbox` with the first acquire.
   // Marked: the agent given them boots a VM per session, so its public route needs allowPublicSandbox (sandbox-harness.ts).
-  if (env.kind === 'sandbox') return markSandboxTools(piCodingTools(sandboxRuntime(kernelSandbox(env.acquire, () => import('harness-world-sandbox/cli')))), env.workspace.budget);
+  if (env.kind === 'sandbox') return markSandboxTools(piCodingTools(sandboxRuntime(kernelSandbox(env.acquire, () => import('harness-world-sandbox/cli')))), sandboxMarkOf(env.workspace));
   const { workspace: descriptor, isolation, runtime } = env;
   const inMemory = runtime.durable ? workspaceRuntime({ ...descriptor, durable: false }, { isolation }) : undefined;
   return piCodingTools(runtime, inMemory ? { inMemory } : {});

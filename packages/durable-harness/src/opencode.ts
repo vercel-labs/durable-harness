@@ -2,7 +2,7 @@ import type { Harness } from 'harness-world';
 import { OPENCODE_TOOLS, type OpenCodeHarnessOptions as RawOptions, type OpenCodeTool, type OpenCodeWorkspace, opencodeHarness as rawOpencodeHarness } from 'harness-world-opencode';
 import { type Agent, type AgentOptions, kernelAgent, splitOptions } from './agent.ts';
 import { resolveEnvironment } from './environments.ts';
-import { markSandboxHarness } from './sandbox-harness.ts';
+import { markSandboxHarness, sandboxMarkOf } from './sandbox-harness.ts';
 import type { SandboxWorkspace, VirtualWorkspace } from './workspace.ts';
 
 export { OPENCODE_TOOLS, type OpenCodeTool };
@@ -93,7 +93,7 @@ export function opencodeHarness(options: OpenCodeHarnessOptions = {}): Harness {
     throw err;
   }
   // On sandbox() each session boots a VM and creates a Drive: marked, so a public route needs allowPublicSandbox (sandbox-harness.ts).
-  return environment?.kind === 'sandbox' ? markSandboxHarness(raw, environment.workspace.budget) : raw;
+  return environment?.kind === 'sandbox' ? markSandboxHarness(raw, sandboxMarkOf(environment.workspace)) : raw;
 }
 
 /** A resolved descriptor, as the harness takes it. */

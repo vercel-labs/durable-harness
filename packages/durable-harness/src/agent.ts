@@ -15,7 +15,8 @@ import {
 import { vercelChannel } from 'harness-world/vercel-channel';
 import { unavailableHint } from './hint.ts';
 import { register } from './registry.ts';
-import { publicSandboxConfig, sandboxHarnessMark } from './sandbox-harness.ts';
+import { closeSandbox, publicSandboxConfig, sandboxHarnessMark } from './sandbox-harness.ts';
+import { type SandboxOnClose, sandboxOnClose } from './workspace.ts';
 import { getWorld } from './world.ts';
 
 /**
@@ -97,6 +98,35 @@ export interface ChatRouteOptions {
   docs?: Doc<any>[];
 }
 
+/** What `agent.sessions.close` takes besides the session. */
+export interface CloseOptions {
+  /**
+   * What to do to the session's sandbox, for this close: `stop` its VM,
+   * `delete` it and its Drive (the session's files, for good), or `keep`
+   * both. Default the workspace's `sandbox({ onClose })` (`stop`). Nothing
+   * for a harness whose sessions have no sandbox.
+   */
+  sandbox?: SandboxOnClose;
+}
+
+/**
+ * An agent's sessions: `DurableSessions`, whose `close` also takes care of
+ * the session's sandbox, for a harness whose sessions each get one
+ * (`sandbox({ onClose })`, `CloseOptions`).
+ */
+export interface AgentSessions extends Omit<DurableSessions, 'close'> {
+  /**
+   * Close the session (`run_completed`; its streams end), then do the
+   * workspace's `onClose` to its sandbox, if it has one: by default its VM
+   * is stopped, and its Drive kept. Neither boots a VM. A failure of the
+   * sandbox's part is logged, and the session is closed all the same. A
+   * close tried again on a session already closed does the sandbox's part
+   * again (harmless: nothing is left running), then throws as the World
+   * refuses to close a run twice.
+   */
+  close(sessionId: string, options?: CloseOptions): Promise<void>;
+}
+
 export interface Agent {
   /** The harness's kernel name, its sessions' run name's last part (`workflow//durable-harness@<version>//<name>`). */
   readonly name: string;
@@ -112,7 +142,7 @@ export interface Agent {
   /** The queue consumer for this agent alone (`withDurableHarness` mounts every agent's for you). */
   handler(request: Request): Promise<Response>;
   /** The sessions underneath: start, send, inspect, live, close, ... */
-  readonly sessions: DurableSessions;
+  readonly sessions: AgentSessions;
 }
 
 /** Settles a promise past the response on Vercel (the request context's `waitUntil`); elsewhere the server outlives it. */
@@ -186,7 +216,7 @@ export function kernelAgent(input: KernelAgentInput): Agent {
         ...(durability !== undefined ? { runAhead: durability === 'on' } : {}),
       })
     ));
-  const sessions = lazySessions(real, traceAudience);
+  const sessions = lazySessions(real, traceAudience, harness, kernel.log);
   const workflowName = workflowNameFor(harness.name);
   register({
     name: harness.name,
@@ -269,7 +299,8 @@ function driveRoute(workflowName: string, sessions: DurableSessions, log?: Durab
 const ROUTES = Symbol.for('durable-harness//drive-routes');
 
 /** `DurableSessions`, bound to its World on first use (a module that makes an agent does no I/O). */
-function lazySessions(real: () => Promise<DurableSessions>, traceAudience?: 'public' | 'private' | 'unknown'): DurableSessions {
+function lazySessions(real: () => Promise<DurableSessions>, traceAudience: 'public' | 'private' | 'unknown' | undefined, harness: Harness, log: DurableSessionsOptions['log']): AgentSessions {
+  const mark = sandboxHarnessMark(harness);
   return {
     handler: async (request) => (await real()).handler(request),
     consume: async (message, meta) => (await real()).consume(message, meta),
@@ -278,7 +309,24 @@ function lazySessions(real: () => Promise<DurableSessions>, traceAudience?: 'pub
     drive: async (id, meta) => (await real()).drive(id, meta),
     withdraw: async (id, submissionId) => (await real()).withdraw(id, submissionId),
     chaos: async (id, spec) => (await real()).chaos(id, spec),
-    close: async (id) => (await real()).close(id),
+    async close(id, options) {
+      const asked = options?.sandbox === undefined ? undefined : sandboxOnClose(options.sandbox, 'sessions.close', 'sandbox');
+      const sessions = await real();
+      let refused: { error: unknown } | undefined;
+      try {
+        await sessions.close(id);
+      } catch (error) {
+        refused = { error };
+      }
+      const action = asked ?? mark?.onClose ?? 'stop';
+      if (mark && action !== 'keep') {
+        // Refused: a close tried again (the World refuses to close a run twice) still does the sandbox's part, harmless
+        // the second time; a session that is not over keeps its sandbox.
+        const over = !refused || ['completed', 'failed', 'cancelled'].includes((await sessions.inspect(id).catch(() => undefined))?.status ?? '');
+        if (over) await closeSandbox(id, action, mark, log);
+      }
+      if (refused) throw refused.error;
+    },
     inspect: async (id) => (await real()).inspect(id),
     doc: async (id, doc) => (await real()).doc(id, doc),
     updateDoc: async (id, doc, mutate, o) => (await real()).updateDoc(id, doc, mutate, o),

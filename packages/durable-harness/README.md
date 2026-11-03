@@ -99,6 +99,42 @@ in the session's own Vercel Sandbox (`sandbox()`), never on the machine that
 drives the session. See [tools](https://vercel.com/docs/agent-harnesses/tools)
 and [security](https://vercel.com/docs/agent-harnesses/security).
 
+## Closing sessions and cleaning up sandboxes
+
+A session on `sandbox()` has its own Vercel Sandbox VM and a Drive at
+`/workspace` that holds its files. `agent.sessions.close(sessionId)` closes
+the session and then, by default, stops its VM, which can do nothing more for
+a closed session. The Drive is kept. To choose what close does, set
+`sandbox({ onClose })`, or pass `close(sessionId, { sandbox })` to choose for
+one session:
+
+- `'stop'` (default): stop the VM, and keep the Drive.
+- `'delete'`: delete the VM and the Drive. This deletes the session's files
+  for good.
+- `'keep'`: leave both. The VM runs until its idle timeout (`idleMs`).
+
+None of these boots a VM. If the Sandbox API fails, close logs the failure
+and closes the session anyway. A close you try again does the sandbox step
+again without harm. Sessions without a sandbox are not affected.
+
+Close keeps Drives by default. To delete them later, import from
+`durable-harness/sandbox`:
+
+```ts
+import { deleteSessionSandbox, sandboxCleanup } from 'durable-harness/sandbox';
+
+// One session that is over (closed, failed or cancelled): its VM and its Drive.
+await deleteSessionSandbox(sessionId);
+
+// app/api/cron/sandboxes/route.ts (a Vercel Cron Job): the VMs and Drives of sessions idle for 30 days.
+export const GET = async () => Response.json(await sandboxCleanup({ idleDays: 30 }));
+```
+
+`deleteSessionSandbox` refuses a session that is still open unless you pass
+`force: true`. `sandboxCleanup` keeps a session whose VM is running or that
+was active within `idleDays`. A run that is cut short reports what it didn't
+reach in `unreached`, and its `resumeAt` tells the next run where to begin.
+
 ## Run anywhere
 
 Local development uses the Workflow SDK's local World with no configuration.

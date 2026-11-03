@@ -16,7 +16,8 @@
  * first session (`npx durable-harness sandbox prepare`).
  * `deleteSessionSandbox` deletes one session's VM and Drive, and
  * `sandboxCleanup` those of sessions idle for some days; neither ever boots
- * a VM.
+ * a VM. `agent.sessions.close` stops the session's VM by default
+ * (`sandbox({ onClose })`: `stop`, `delete` or `keep`).
  *
  * Importing this entry loads only the names (`harness-world-sandbox/names`):
  * the session factory, the relay link and `@vercel/sandbox` load on the first
@@ -33,6 +34,7 @@ export {
   type SandboxBudget,
   type SandboxCredentials,
   type SandboxNetwork,
+  type SandboxOnClose,
   type SandboxOptions,
   type SandboxRecord,
   type SandboxWorkspace,
@@ -78,7 +80,8 @@ export interface DeleteSessionSandboxOptions extends SandboxManageOptions {
 }
 
 /**
- * Delete a session's VM and its Drive (§5.7), for a session that is over.
+ * Delete a session's VM and its Drive (§5.7), for a session that is over
+ * (what `sessions.close(id, { sandbox: 'delete' })` does as it closes).
  * Close the session first (`sessions.close`, or cancel its run): the run
  * must be completed, failed or cancelled on the World (or gone from it),
  * else this throws, unless `force: true`. A session still open would

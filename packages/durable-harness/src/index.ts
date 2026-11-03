@@ -18,7 +18,7 @@
  * and files go to (`virtual()`, `sandbox()`; docs/workspaces.md), and the
  * advanced API: `durableSessions` over any World and any number of harnesses.
  */
-export { type Agent, type AgentOptions, type ChatRouteOptions, type Durability, durableAgent, type DurableAgentOptions, waitUntil } from './agent.ts';
+export { type Agent, type AgentOptions, type AgentSessions, type ChatRouteOptions, type CloseOptions, type Durability, durableAgent, type DurableAgentOptions, waitUntil } from './agent.ts';
 export { flowHandler } from './flow.ts';
 export { forwardQueue, type ForwardQueueOptions, type QueueMeta, queueHandler, registered, registerQueue, type RegisterQueueOptions } from './registry.ts';
 export { FLOW_ROUTE, FX_ROUTE, QUEUE_NAMESPACE, QUEUE_PREFIX, QUEUE_TOPIC } from './routing.ts';
@@ -32,6 +32,7 @@ export {
   type SandboxBudget,
   type SandboxCredentials,
   type SandboxNetwork,
+  type SandboxOnClose,
   type SandboxOptions,
   type SandboxRecord,
   type SandboxWorkspace,

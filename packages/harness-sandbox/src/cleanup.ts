@@ -16,6 +16,8 @@
  *   session of the app's World names (unless `orphans`). Each delete
  *   checks again that the session is idle (`ifIdle`): one that resumed
  *   since the decision is kept, nothing of it stopped.
+ * - `stopSession(name)`: stop the VM if it runs, and nothing else (what a
+ *   closed session's sandbox gets by default: its sandbox and Drive kept).
  *
  * Every `stop`, `delete` and `deleteDrive` waits its turn on one limiter per
  * process: at most 20 a second, the platform's delete limit.
@@ -175,6 +177,45 @@ export async function deleteSession(name: string, options: DeleteOptions & { ifI
     if (ifIdle && err instanceof ApiConflict && err.kind === 'drive_attached') throw new SessionInUse(name);
     throw err;
   }
+}
+
+/** What `stopSession` did: the session's VM stopped, or there was none running. */
+export interface StoppedSession {
+  name: string;
+  sandbox: 'stopped' | 'none';
+}
+
+/**
+ * Stop a session's VM (`name`, from `sessionName`) if it is running or
+ * booting, without booting one and without deleting anything: its sandbox
+ * and its Drive stay, so a later `deleteSession` (or `cleanupIdle`) still
+ * finds them. A VM that is already stopping or saving its state, or
+ * stopped, or not there, is left as it is. A 429 or 5xx is retried, on the
+ * shared limiter, for up to `detachMs`. Calling it again is harmless: the
+ * second call finds nothing running.
+ */
+export async function stopSession(name: string, options: DeleteOptions): Promise<StoppedSession> {
+  if (!SESSION_NAME.test(name)) throw new TypeError(`harness-sandbox: ${JSON.stringify(name)} is not a session's sandbox name`);
+  const limit = options.limit ?? DELETES;
+  const wait = options.sleep ?? sleep;
+  const deadline = Date.now() + (options.detachMs ?? 60_000);
+  const vm = await options.api.getSandbox(name);
+  if (!vm || (vm.status !== 'pending' && vm.status !== 'running')) return { name, sandbox: 'none' };
+  for (let pause = 1000; ; pause = Math.min(pause * 2, 5000)) {
+    await limit();
+    try {
+      await vm.stop();
+      break;
+    } catch (err) {
+      // Gone in between: nothing left to stop.
+      if (apiErrorOf(err).status === 404) return { name, sandbox: 'none' };
+      if (!transient(err) || Date.now() + pause > deadline) throw err;
+      options.log?.('harness-sandbox: the stop was refused for now; retrying', { name, ...apiErrorOf(err) });
+      await wait(pause);
+    }
+  }
+  options.log?.('harness-sandbox: stopped a session sandbox', { name });
+  return { name, sandbox: 'stopped' };
 }
 
 export interface CleanupOptions extends DeleteOptions {

@@ -190,6 +190,20 @@ export interface SandboxBudget {
   vmSeconds?: number;
 }
 
+/**
+ * What `agent.sessions.close` does to the session's sandbox, once the
+ * session is closed. None of them boots a VM.
+ *
+ * - `stop` (default): stop the session's VM if it is running. The Drive and
+ *   its files stay, for `deleteSessionSandbox` or `sandboxCleanup` later.
+ * - `delete`: stop the VM, then delete the session's sandbox and its Drive
+ *   (`deleteSessionSandbox`). Deleting the Drive deletes the session's files
+ *   for good.
+ * - `keep`: leave both alone: the VM runs until its idle timeout (`idleMs`),
+ *   and the Drive stays.
+ */
+export type SandboxOnClose = 'stop' | 'delete' | 'keep';
+
 export interface SandboxOptions {
   /**
    * The Vercel region of the session's VM and Drive (they must match, and a
@@ -251,6 +265,8 @@ export interface SandboxOptions {
   budget?: SandboxBudget;
   /** See `SandboxCredentials`. Default: the environment's. */
   credentials?: SandboxCredentials;
+  /** See `SandboxOnClose`: what closing a session does to its sandbox. Default `stop`; `sessions.close(id, { sandbox })` overrides it for one session. */
+  onClose?: SandboxOnClose;
 }
 
 /**
@@ -271,6 +287,7 @@ export interface SandboxWorkspace {
   readonly commandTimeoutMs: number;
   readonly driveSize: number;
   readonly budget: Readonly<Required<SandboxBudget>>;
+  readonly onClose: SandboxOnClose;
   /** Not enumerable. */
   readonly credentials?: Readonly<SandboxCredentials>;
   readonly [BRAND]: true;
@@ -284,6 +301,7 @@ export const SANDBOX_DEFAULTS = Object.freeze({
   commandTimeoutMs: 10 * 60_000,
   driveSize: 10 * 1024 ** 3,
   budget: Object.freeze({ turnUsd: Infinity, sessionUsd: Infinity, vmSeconds: 4 * 60 * 60 }),
+  onClose: 'stop' as const,
 });
 
 /**
@@ -312,7 +330,7 @@ export interface SandboxRecord {
   readonly vmSeconds?: number;
 }
 
-const SANDBOX_KEYS = ['region', 'image', 'vcpus', 'network', 'env', 'idleMs', 'commandTimeoutMs', 'driveSize', 'budget', 'credentials'] as const;
+const SANDBOX_KEYS = ['region', 'image', 'vcpus', 'network', 'env', 'idleMs', 'commandTimeoutMs', 'driveSize', 'budget', 'credentials', 'onClose'] as const;
 
 const SANDBOX_LATER: Record<string, string> = {
   persistent: 'session VMs are never persistent: the Drive holds the files and the log the session, so every boot is a fresh VM',
@@ -384,7 +402,8 @@ export function sandbox(first: SandboxOptions | SandboxWorkspace = {}, overrides
   const driveSize = int('sandbox', 'driveSize', opts.driveSize ?? SANDBOX_DEFAULTS.driveSize, DRIVE_MIN, DRIVE_MAX);
   if (driveSize % DRIVE_BLOCK !== 0) throw invalid('sandbox', 'driveSize', `must be a multiple of ${DRIVE_BLOCK}`, driveSize);
   const budget = sandboxBudget(opts.budget ?? {});
-  const descriptor: Record<string, unknown> = { kind: 'sandbox', vcpus, network, env, idleMs, commandTimeoutMs, driveSize, budget };
+  const onClose = sandboxOnClose(opts.onClose ?? SANDBOX_DEFAULTS.onClose, 'sandbox', 'onClose');
+  const descriptor: Record<string, unknown> = { kind: 'sandbox', vcpus, network, env, idleMs, commandTimeoutMs, driveSize, budget, onClose };
   if (region !== undefined) descriptor.region = region;
   if (image !== undefined) descriptor.image = image;
   if (opts.credentials !== undefined) {
@@ -392,6 +411,12 @@ export function sandbox(first: SandboxOptions | SandboxWorkspace = {}, overrides
     Object.defineProperty(descriptor, 'credentials', { value: sandboxCredentials(opts.credentials), enumerable: false });
   }
   return brand(descriptor) as unknown as SandboxWorkspace;
+}
+
+/** `onClose` (or `sessions.close`'s `sandbox`), checked: `stop`, `delete` or `keep`. */
+export function sandboxOnClose(value: unknown, fn: string, option: string): SandboxOnClose {
+  if (value === 'stop' || value === 'delete' || value === 'keep') return value;
+  throw invalid(fn, option, "must be 'stop', 'delete' or 'keep'", value);
 }
 
 function sandboxImage(image: unknown): string | { readonly snapshot: string } | undefined {

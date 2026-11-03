@@ -3,7 +3,7 @@ import type { Harness } from 'harness-world';
 import { isWorkspaceTool } from 'harness-world-hands/runtime';
 import { type Agent, type AgentOptions, kernelAgent, splitOptions } from './agent.ts';
 import { kernelSandboxOf, resolveEnvironment } from './environments.ts';
-import { markSandboxHarness } from './sandbox-harness.ts';
+import { markSandboxHarness, type SandboxHarnessMark, sandboxMarkOf } from './sandbox-harness.ts';
 import { isWorkspace, sandbox, type SandboxWorkspace } from './workspace.ts';
 
 /** `claudeCodeHarness`'s options: the kernel harness's, with the session's sandbox given as a `sandbox()` workspace. */
@@ -68,11 +68,11 @@ export function claudeCode(options: ClaudeCodeOptions): Agent {
  */
 export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
   const kernel = kernelOptions(options, 'claudeCodeHarness');
-  return markSandboxHarness(kernelHarness(kernel.options), kernel.budget);
+  return markSandboxHarness(kernelHarness(kernel.options), kernel.mark);
 }
 
 /** Check `options` and bind the workspace: what the kernel harness takes. Throws a `TypeError` for anything Claude Code can't run with. */
-function kernelOptions(options: ClaudeCodeHarnessOptions, fn: string): { options: KernelOptions; budget: { sessionUsd: number; vmSeconds: number } } {
+function kernelOptions(options: ClaudeCodeHarnessOptions, fn: string): { options: KernelOptions; mark: SandboxHarnessMark } {
   for (const [key, replacement] of Object.entries(REMOVED)) {
     if (key in options && (options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`durable-harness: ${fn}({ ${key} }) was removed: ${replacement}`);
   }
@@ -104,7 +104,7 @@ function kernelOptions(options: ClaudeCodeHarnessOptions, fn: string): { options
     budget: { turnUsd: ws.budget.turnUsd, sessionUsd: ws.budget.sessionUsd },
     commandTimeoutMs: ws.commandTimeoutMs,
   };
-  return { options: { ...rest, sandbox: sandboxBinding }, budget: ws.budget };
+  return { options: { ...rest, sandbox: sandboxBinding }, mark: sandboxMarkOf(ws) };
 }
 
 /** The pinned Agent SDK version (`@anthropic-ai/claude-agent-sdk`). */

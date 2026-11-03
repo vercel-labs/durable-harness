@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ApiConflict, type CleanupApi, type DriveInfo, type VmHandle, type VmStatus } from '../src/api.ts';
-import { cleanupIdle, deleteSession, rateLimiter, SessionInUse } from '../src/cleanup.ts';
+import { cleanupIdle, deleteSession, rateLimiter, SessionInUse, stopSession } from '../src/cleanup.ts';
 import { sessionName } from '../src/names.ts';
 
 const DAY = 86_400_000;
@@ -155,6 +155,49 @@ describe('deleteSession: a session\'s VM and Drive, never booting a VM', () => {
     const q = platform({}, { [m]: {} }, { attachedFor: 1000 });
     await expect(deleteSession(m, { api: q.api, ...instant, ifIdle: { startedAt: undefined } })).rejects.toBeInstanceOf(SessionInUse);
     expect(q.calls.filter((c) => c.startsWith('deleteDrive'))).toHaveLength(1);
+  });
+});
+
+describe('stopSession: a closed session\'s VM stopped, its sandbox and Drive kept, never booting a VM', () => {
+  it('a running or booting VM is stopped once; calling it again finds nothing running', async () => {
+    for (const status of ['running', 'pending'] as const) {
+      const n = name(`wrun_stop_${status}`);
+      const p = platform({ [n]: { status, startedAt: NOW } }, { [n]: {} });
+      expect(await stopSession(n, { api: p.api, ...instant })).toEqual({ name: n, sandbox: 'stopped' });
+      expect(await stopSession(n, { api: p.api, ...instant })).toEqual({ name: n, sandbox: 'none' });
+      expect(p.calls).toEqual([`get:${n}`, `stop:${n}`, `get:${n}`]);
+      // Nothing deleted: the sandbox and the Drive are still there.
+      expect(Object.keys(p.vms)).toEqual([n]);
+      expect(Object.keys(p.drives)).toEqual([n]);
+    }
+  });
+
+  it('a VM stopped, stopping, snapshotting or not there is left alone; a name that is not a session\'s is refused', async () => {
+    for (const status of ['stopped', 'stopping', 'snapshotting', 'failed'] as const) {
+      const n = name(`wrun_left_${status}`);
+      const p = platform({ [n]: { status, startedAt: NOW } }, { [n]: {} });
+      expect(await stopSession(n, { api: p.api, ...instant })).toEqual({ name: n, sandbox: 'none' });
+      expect(p.calls).toEqual([`get:${n}`]);
+    }
+    const none = platform({}, {});
+    expect(await stopSession(name('wrun_none'), { api: none.api, ...instant })).toEqual({ name: name('wrun_none'), sandbox: 'none' });
+    await expect(stopSession('dh-base-abc', { api: none.api, ...instant })).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it('a 429 or 5xx from the stop is retried; a 404 is nothing to stop; another refusal is thrown', async () => {
+    const n = name('wrun_stop_flaky');
+    const p = platform({ [n]: { status: 'running', startedAt: NOW } }, { [n]: {} });
+    const vm = (await p.api.getSandbox(n))!;
+    const refusal = (status: number) => Object.assign(new Error(`Status code ${status}`), { response: { status } });
+    let stops = 0;
+    const flaky: CleanupApi = { ...p.api, getSandbox: async () => ({ ...vm, stop: async () => (++stops < 3 ? Promise.reject(refusal(stops === 1 ? 429 : 502)) : vm.stop()) }) };
+    expect(await stopSession(n, { api: flaky, ...instant })).toEqual({ name: n, sandbox: 'stopped' });
+    expect(stops).toBe(3);
+    const gone: CleanupApi = { ...p.api, getSandbox: async () => ({ ...vm, status: 'running', stop: async () => Promise.reject(refusal(404)) }) };
+    expect(await stopSession(n, { api: gone, ...instant })).toEqual({ name: n, sandbox: 'none' });
+    const forbidden: CleanupApi = { ...p.api, getSandbox: async () => ({ ...vm, status: 'running', stop: async () => Promise.reject(refusal(403)) }) };
+    await expect(stopSession(n, { api: forbidden, ...instant })).rejects.toThrow('Status code 403');
+    expect(p.calls.some((c) => c.startsWith('BOOT'))).toBe(false);
   });
 });
 

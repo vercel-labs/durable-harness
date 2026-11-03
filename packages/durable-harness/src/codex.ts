@@ -3,7 +3,7 @@ import { type CodexHarnessOptions as RawCodexHarnessOptions, codexHarness as raw
 import { isWorkspaceTool } from 'harness-world-hands/runtime';
 import { type Agent, type AgentOptions, kernelAgent, splitOptions } from './agent.ts';
 import { resolveEnvironment } from './environments.ts';
-import { markSandboxHarness } from './sandbox-harness.ts';
+import { markSandboxHarness, sandboxMarkOf } from './sandbox-harness.ts';
 import { isWorkspace, sandbox, type SandboxWorkspace } from './workspace.ts';
 
 export interface CodexHarnessOptions extends Omit<RawCodexHarnessOptions, 'machine' | 'test'> {
@@ -43,7 +43,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       ...rest,
       machine: { acquire, env: workspace.env, network: workspace.network, budget: workspace.budget, commandTimeoutMs: workspace.commandTimeoutMs },
     }),
-    workspace.budget
+    sandboxMarkOf(workspace)
   );
 }
 

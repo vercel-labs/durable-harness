@@ -32,11 +32,31 @@
  * route itself, and caps each session with `sandbox({ budget })`.
  */
 import { Unavailable } from 'harness-world';
+import type { SandboxCredentials, SandboxOnClose, SandboxWorkspace } from './workspace.ts';
 
-/** What a public route needs to know of a sandbox harness: the per-session caps its `sandbox()` workspace set. */
+/**
+ * What a public route needs to know of a sandbox harness: the per-session
+ * caps its `sandbox()` workspace set. And what `sessions.close` needs: what
+ * to do to a closed session's sandbox (`onClose`), and the workspace's
+ * `credentials` (not enumerable), to name it and reach it.
+ */
 export interface SandboxHarnessMark {
   sessionUsd: number;
   vmSeconds: number;
+  /** Absent on a mark made by an older copy of this package: `stop`. */
+  onClose?: SandboxOnClose;
+  readonly credentials?: Readonly<SandboxCredentials>;
+}
+
+/** What a harness built on `workspace` is marked with. */
+export function sandboxMarkOf(workspace: Pick<SandboxWorkspace, 'budget' | 'onClose' | 'credentials'>): SandboxHarnessMark {
+  return withCredentials({ sessionUsd: workspace.budget.sessionUsd, vmSeconds: workspace.budget.vmSeconds, onClose: workspace.onClose }, workspace.credentials);
+}
+
+/** `mark` with `credentials` held off its enumerable properties (a logged harness never prints a token). */
+function withCredentials(mark: SandboxHarnessMark, credentials: Readonly<SandboxCredentials> | undefined): SandboxHarnessMark {
+  if (credentials !== undefined) Object.defineProperty(mark, 'credentials', { value: credentials, enumerable: false });
+  return mark;
 }
 
 const MARK = Symbol.for('durable-harness.sandbox-harness');
@@ -53,8 +73,8 @@ const sealed: WeakMap<object, SandboxHarnessMark> = ((globalThis as Record<symbo
  * builds its harness from a `sandbox()` workspace calls it. Returns the
  * harness.
  */
-export function markSandboxHarness<H extends object>(harness: H, budget: { sessionUsd: number; vmSeconds: number }): H {
-  const mark: SandboxHarnessMark = Object.freeze({ sessionUsd: budget.sessionUsd, vmSeconds: budget.vmSeconds });
+export function markSandboxHarness<H extends object>(harness: H, budget: SandboxHarnessMark): H {
+  const mark: SandboxHarnessMark = Object.freeze(withCredentials({ sessionUsd: budget.sessionUsd, vmSeconds: budget.vmSeconds, ...(budget.onClose !== undefined ? { onClose: budget.onClose } : {}) }, budget.credentials));
   if (Object.isExtensible(harness)) Object.defineProperty(harness, MARK, { value: mark, enumerable: true });
   else sealed.set(harness, mark);
   return harness;
@@ -72,19 +92,59 @@ export function sandboxHarnessMark(harness: object): SandboxHarnessMark | undefi
  * boots a VM per session, so its factory marks its harness from them
  * (`sandboxToolsMark`). A spread of a tool keeps the mark. Returns the tools.
  */
-export function markSandboxTools<T extends object>(tools: T[], budget: { sessionUsd: number; vmSeconds: number }): T[] {
+export function markSandboxTools<T extends object>(tools: T[], budget: SandboxHarnessMark): T[] {
   for (const tool of tools) markSandboxHarness(tool, budget);
   return tools;
 }
 
-/** The mark a harness built with `tools` carries: the loosest of the marks its tools carry (`markSandboxTools`), or undefined when none does. */
+/**
+ * The mark a harness built with `tools` carries: the loosest of the caps its
+ * tools' marks carry (`markSandboxTools`), and the first one's `onClose` and
+ * `credentials` (every `sandbox()` of a session names the same sandbox), or
+ * undefined when none does.
+ */
 export function sandboxToolsMark(tools: readonly unknown[] | undefined): SandboxHarnessMark | undefined {
   let mark: SandboxHarnessMark | undefined;
+  let first: SandboxHarnessMark | undefined;
   for (const tool of tools ?? []) {
     const m = typeof tool === 'object' && tool !== null ? sandboxHarnessMark(tool) : undefined;
-    if (m) mark = { sessionUsd: Math.max(m.sessionUsd, mark?.sessionUsd ?? 0), vmSeconds: Math.max(m.vmSeconds, mark?.vmSeconds ?? 0) };
+    if (!m) continue;
+    first ??= m;
+    mark = { sessionUsd: Math.max(m.sessionUsd, mark?.sessionUsd ?? 0), vmSeconds: Math.max(m.vmSeconds, mark?.vmSeconds ?? 0), ...(first.onClose !== undefined ? { onClose: first.onClose } : {}) };
   }
-  return mark;
+  return mark && withCredentials(mark, first?.credentials);
+}
+
+/** What `closeSandbox` did, for the log line and the tests. */
+export type ClosedSandbox = { action: 'keep' } | { action: 'stop'; sandbox: 'stopped' | 'none' } | { action: 'delete'; sandbox: 'deleted' | 'none'; drive: 'deleted' | 'none' } | { action: SandboxOnClose; failed: string };
+
+/**
+ * What `sessions.close` does to a closed session's sandbox (`onClose`):
+ * stop its VM, or delete it and its Drive, or nothing. Never boots a VM
+ * (harness-world-sandbox's `stopSession` and `deleteSession`) and never
+ * throws: a failure (the Sandbox API, no project to name the sandbox from)
+ * is logged (on `console.warn` without a `log`) and returned, and the
+ * close stands. Idempotent: a second call finds nothing running (or
+ * nothing there). Loads the sandbox tier only when there is something to
+ * do.
+ */
+export async function closeSandbox(runId: string, action: SandboxOnClose, mark: SandboxHarnessMark, log?: (message: string, fields?: Record<string, unknown>) => void): Promise<ClosedSandbox> {
+  if (action === 'keep') return { action };
+  try {
+    const [{ resolveProjectId, sessionName }, tier] = await Promise.all([import('harness-world-sandbox/names'), import('harness-world-sandbox')]);
+    const { credentials } = mark;
+    const name = sessionName(credentials?.projectId ?? resolveProjectId(credentials), runId);
+    const api = tier.vercelSandboxApi(credentials);
+    const options = { api, ...(log ? { log } : {}) };
+    if (action === 'stop') return { action, sandbox: (await tier.stopSession(name, options)).sandbox };
+    const { sandbox, drive } = await tier.deleteSession(name, options);
+    return { action, sandbox, drive };
+  } catch (err) {
+    const failed = err instanceof Error ? err.message : String(err);
+    // Said even without a log: a VM left running costs money until its timeout.
+    (log ?? ((message: string, fields?: Record<string, unknown>) => console.warn(message, fields)))(`durable-harness: closing the session left its sandbox as it was (onClose: '${action}'); sandboxCleanup or deleteSessionSandbox can remove it later`, { runId, error: failed });
+    return { action, failed };
+  }
 }
 
 const isMark = (v: unknown): v is SandboxHarnessMark => typeof v === 'object' && v !== null && typeof (v as SandboxHarnessMark).sessionUsd === 'number' && typeof (v as SandboxHarnessMark).vmSeconds === 'number';
