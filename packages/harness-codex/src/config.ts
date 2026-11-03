@@ -6,7 +6,7 @@
 export type TomlValue = string | number | boolean | TomlValue[] | { [key: string]: TomlValue };
 
 /**
- * Codex features turned off (`codex features list`). With these off, the
+ * Codex features with built-in tools off (`codex features list`). The
  * model is offered only the harness's dynamic tools and `request_user_input`
  * (which Codex itself answers "unavailable in Default mode"): no shell, no `apply_patch`,
  * no images, no web, no sub-agents. The rest are side features that would
@@ -120,7 +120,14 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
       },
     },
     ...(options.cwd ? { projects: { [options.cwd]: { trust_level: 'untrusted' } } } : {}),
-    features: { ...BUILTINS_OFF },
+    features: {
+      ...BUILTINS_OFF,
+      // Newer model families default to code-mode-only tools. Keep the
+      // harness's functions direct: their rollout call_id must identify the
+      // same effect as item/tool/call, including the never-replay barrier.
+      // Nested code-mode calls have separate IDs that the rollout omits.
+      code_mode: { enabled: true, direct_only_tool_namespaces: ['functions'] },
+    },
     analytics: { enabled: false },
   };
   return merge(base, options.extra ?? {});

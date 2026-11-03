@@ -36,6 +36,9 @@ every other harness here: `durableSessions({ world, harness })`, then
   on** next to them, each call in the log before it runs (see
   [Tools](#tools)), and `view_image` (a read). Image generation, web
   search, sub-agents and plugins stay off either way.
+  The `functions` namespace stays directly exposed even for newer code-mode
+  model families, preserving each tool's rollout call ID for the journal.
+  The nested code-mode host stays disabled.
 - **Codex's thread is mirrored into the log.** Codex keeps a thread as an
   append-only JSONL file, the rollout. Every line it writes becomes a record
   of the session's native journal (group-committed record-only effects),

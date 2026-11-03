@@ -317,7 +317,8 @@ describe('the Codex harness defaults (fake app-server, stand-in sandbox)', () =>
     expect(config).toMatch(/^sandbox_mode = "read-only"$/m);
     const features = `\n${config}`.split('\n[').find((t) => t.startsWith('features]\n'))!;
     for (const feature of ['shell_tool', 'unified_exec', 'view_image', 'image_generation', 'multi_agent', 'plugins']) expect(features).toMatch(new RegExp(`^${feature} = false$`, 'm'));
-    expect(features).not.toMatch(/= true$/m);
+    expect(features).not.toMatch(/^\w+ = true$/m);
+    expect(config).toContain('[features.code_mode]\nenabled = true\ndirect_only_tool_namespaces = ["functions"]');
     expect(config).toMatch(/^web_search = "disabled"$/m);
     // The thread's tools are the app's alone.
     const meta = JSON.parse(rolloutLines(state)[0]!) as { payload: { dynamic_tools: { name: string }[] } };
