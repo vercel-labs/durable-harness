@@ -256,6 +256,28 @@ describe('the Codex harness (fake app-server, stand-in sandbox)', () => {
     expect(turnsEnded(state)).toBe(1);
   });
 
+  it('a prompt or follow-up sent during a turn waits for it to end, then gets a turn of its own (turn/start, not turn/steer)', async () => {
+    const r = await newRig();
+    const a = await session(await tmp('hwc-'), r, { env: { FAKE_CODEX_THINK_MS: '1000' } });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'call unsafe_send_email {"to":"a@b.c","subject":"hi","body":"x"}');
+    await until(async () => ((await a.sessions.inspect(sessionId)).effectOrder.some((e) => e.name === 'tool.unsafe_send_email') ? true : undefined));
+    const prompt = await a.sessions.send(sessionId, 'and then this');
+    const followUp = await a.sessions.send(sessionId, 'and this too', 'followUp');
+    const state = await waitTurns(a.sessions, sessionId, 3);
+    expect(state.placed.has(prompt) && state.placed.has(followUp)).toBe(true);
+    const ids = summarizeRollout(rolloutLines(state)).clientIds;
+    expect(ids.has(prompt) && ids.has(followUp)).toBe(true);
+    const entries = transcriptOf(state).map((x) => x.data as { type: string; text?: string });
+    // The first turn was not steered; each later one answers its own message.
+    expect(entries.some((e) => e.text?.includes('steered'))).toBe(false);
+    expect(entries.filter((e) => e.type === 'turn')).toHaveLength(3);
+    const turnEnds = entries.flatMap((e, i) => (e.type === 'turn' ? [i] : []));
+    const said = (text: string) => entries.findIndex((e) => e.type === 'message' && e.text === text);
+    expect(said('echo: and then this')).toBeGreaterThan(turnEnds[0]!);
+    expect(said('echo: and this too')).toBeGreaterThan(turnEnds[1]!);
+  });
+
   it('a steer Codex refused (its turn had just ended) runs next in the same turn', async () => {
     const r = await newRig();
     const a = await session(await tmp('hwc-'), r, { env: { FAKE_CODEX_STEER: 'reject', FAKE_CODEX_THINK_MS: '1500' } });

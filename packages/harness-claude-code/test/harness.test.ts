@@ -272,6 +272,30 @@ describe('claudeCodeHarness (scripted SDK, stand-in VM)', () => {
     expect(transcriptOf(state).at(-2)?.data).toMatchObject({ text: expect.stringContaining('read your steer') });
   });
 
+  it('a prompt or follow-up sent while a tool runs waits for the turn to end, then gets a turn of its own', async () => {
+    const seen: { text: string; priority?: string }[] = [];
+    const sdk = fakeSdk({ onMessage: (m) => seen.push(m) });
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk);
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'call bash {"command":"sleep 2; echo done"}');
+    await until(async () => ((await a.sessions.inspect(sessionId)).effectOrder.some((e) => e.name === 'tool.bash') ? true : undefined));
+    const prompt = await a.sessions.send(sessionId, 'and then this');
+    const followUp = await a.sessions.send(sessionId, 'and this too', 'followUp');
+    const state = await waitTurns(a.sessions, sessionId, 3);
+    // Neither went into the running turn (no priority `next`): each was sent once the turn before it ended.
+    expect(seen.map((m) => [m.text, m.priority])).toEqual([
+      ['call bash {"command":"sleep 2; echo done"}', undefined],
+      ['and then this', undefined],
+      ['and this too', undefined],
+    ]);
+    expect(state.placed.has(prompt) && state.placed.has(followUp)).toBe(true);
+    const entries = transcriptOf(state).map((r) => r.data as { type: string; text?: string });
+    const turnEnds = entries.flatMap((e, i) => (e.type === 'turn' ? [i] : []));
+    const said = (text: string) => entries.findIndex((e) => e.type === 'message' && e.text === text);
+    expect(said('echo: and then this')).toBeGreaterThan(turnEnds[0]!);
+    expect(said('echo: and this too')).toBeGreaterThan(turnEnds[1]!);
+  });
+
   it('idleMs: a follow-up within the grace goes to the same child, without a resume', async () => {
     const sdk = fakeSdk();
     const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk, { idleMs: 4000 });

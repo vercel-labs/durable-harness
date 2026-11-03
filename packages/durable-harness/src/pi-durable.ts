@@ -512,7 +512,8 @@ function snapshotter(world: () => Promise<World>): (sessionId: string) => Promis
  *
  * POST `{ sessionId?, text, kind?, requestId? }` submits the text to the
  * session's root conversation (`kind: 'steer'` lands after the current tool
- * round, Pi's `whenBusy: 'steer'`; a retried request with the same
+ * round, Pi's `whenBusy: 'steer'`; a `prompt` or `followUp` sent while a
+ * turn runs joins that turn, Pi's `whenBusy: 'followUp'`; a retried request with the same
  * `requestId` finds the same submission), drives the turn in this invocation,
  * and streams it as server-sent events until the session is idle: `text`
  * deltas, `tool_start` / `tool_end`, `idle`, then `event: end`, the events

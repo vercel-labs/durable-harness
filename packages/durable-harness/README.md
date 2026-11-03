@@ -99,6 +99,28 @@ in the session's own Vercel Sandbox (`sandbox()`), never on the machine that
 drives the session. See [tools](https://vercel.com/docs/agent-harnesses/tools)
 and [security](https://vercel.com/docs/agent-harnesses/security).
 
+## Sending messages
+
+A message goes to a session as one of three kinds: `prompt` (the default),
+`followUp` or `steer` (`sessions.send(sessionId, text, kind)`, or a chat
+route's POST `kind`). On an idle session, each kind starts a turn. When a
+message arrives while a turn is running, what happens depends on the harness:
+
+| Harness | `steer` during a turn | `prompt` or `followUp` during a turn |
+| --- | --- | --- |
+| Pi (`durable-harness/pi-durable` and `durable-harness/pi`) | Goes into the running turn after its current tool calls (Pi's `steer`). | Joins the running turn (Pi's `followUp`). Pi answers it after the turn's own answer, before the turn ends, so the turn's stream carries both answers and ends once. |
+| OpenCode | Goes into the running turn at OpenCode's next step. | Waits for the turn to end, then starts its own turn. |
+| fx | Goes into the running turn at its next model request. | Waits for the turn to end. Messages that waited together then start one turn. |
+| Claude Code | Goes into the running turn, at priority `next`. | Waits for the turn to end, then starts its own turn. |
+| Codex | Goes into the running turn (`turn/steer`). If Codex has just ended its turn, the steer runs next, in the same turn. | Waits for the turn to end, then starts its own turn. |
+
+On every harness, prompts and follow-ups are answered in the order they
+were sent, after the turn that was running. The difference is whether a
+prompt sent during a turn becomes part of that turn, as on Pi, or gets a
+turn of its own. Pi's agent can only queue mid-turn input as a
+steer or a follow-up, and Claude Code, Codex and OpenCode take only steers
+into a running turn.
+
 ## Run anywhere
 
 Local development uses the Workflow SDK's local World with no configuration.

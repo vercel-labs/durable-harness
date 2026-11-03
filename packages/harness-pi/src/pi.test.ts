@@ -270,6 +270,60 @@ describe('pi on world-local', () => {
     expect(state.submissions.every((s) => state.placed.has(s.id))).toBe(true);
   });
 
+  it("a prompt or follow-up sent mid-turn joins the running turn (Pi's followUp): answered after it, before its idle", async () => {
+    const { faux, model, streamFn } = setupModel();
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall('shout', { text: 'hi' }), { stopReason: 'toolUse' }),
+      fauxAssistantMessage(fauxText('I shouted HI.')),
+      fauxAssistantMessage(fauxText('Both noted.')),
+    ]);
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let running!: () => void;
+    const started = new Promise<void>((r) => (running = r));
+    let mid: string[] = [];
+    let seen!: () => void;
+    const handed = new Promise<void>((r) => (seen = r));
+    const harness = piHarness({ model, streamFn, inboxPollMs: 20, tools: [shoutTool(async () => (running(), released))] });
+    const world = await localWorld(await mkdtemp(join(tmpdir(), 'hw-pi-')));
+    const sessions = durableSessions({
+      world,
+      harness: {
+        ...harness,
+        // While the tool runs, only the inbox pull reads pending(): once it has both, Pi has them.
+        drive: (ctx) => harness.drive({ ...ctx, pending() {
+          const pending = ctx.pending();
+          if (mid.length && mid.every((id) => pending.some((s) => s.id === id))) seen();
+          return pending;
+        } }),
+      },
+    });
+    world.registerHandler(QUEUE_PREFIX, sessions.handler);
+    const { sessionId } = await sessions.start({ prompt: 'shout hi' });
+    await started;
+    mid = [await sessions.send(sessionId, 'and then this'), await sessions.send(sessionId, 'and this too', 'followUp')];
+    await handed;
+    release();
+    const state = await until(async () => {
+      const s = await sessions.inspect(sessionId);
+      return s.effects.get('model:2')?.status === 'completed' ? s : undefined;
+    });
+    expect(state.effectOrder.map((e) => e.name)).toEqual(['model', 'tool.shout', 'model', 'model']);
+    // Both were placed by a model call of the same turn: not a turn start, no idle before it.
+    const joined = state.effects.get('model:2')!.input as { appended: { role: string; content: unknown }[]; turnStart?: boolean };
+    expect(joined.turnStart).toBe(false);
+    expect(joined.appended.map((m) => m.role)).toEqual(['user', 'user']);
+    expect(state.effects.get('model:2')!.placed).toEqual(mid);
+    const lines = await until(async () => {
+      const l = await readJsonLines(world, sessionId, liveStreamName(sessionId));
+      return l.some((e) => (e as { type?: string }).type === 'idle') ? l : undefined;
+    });
+    // The running turn's stream carries both answers before its idle (a later wake's drive may add an idle of its own).
+    const first = lines.findIndex((e) => (e as { type?: string }).type === 'idle');
+    const text = lines.slice(0, first).flatMap((e) => ((e as { type?: string }).type === 'text' ? [(e as { delta: string }).delta] : [])).join('');
+    expect(text).toBe('I shouted HI.Both noted.');
+  });
+
   it('continues the conversation across deliveries from the log alone', async () => {
     const { faux, model, streamFn } = setupModel();
     faux.setResponses([
