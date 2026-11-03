@@ -230,6 +230,99 @@ describe('the session factory: attach, and restart on a new VM', () => {
   });
 });
 
+describe('the session factory: the image, static or a hook of the session', () => {
+  it('a static image boots every VM, as before', async () => {
+    const api = fakeApi();
+    const acquire = factory(api, { spec: { image: { snapshot: 'snap_static' } } });
+    const rec = memoryRecord();
+    await (await track(acquire(invocation({ count: 1, fenced: true }, { record: rec.store }).request))).close();
+    expect(api.vms.get(NAME)!.create.source).toEqual({ snapshot: 'snap_static' });
+    expect(rec.get()!.image).toBe('snapshot:snap_static');
+  });
+
+  it('asks the hook when a VM is created (first boot and every restart), never when a running VM is reused', async () => {
+    const api = fakeApi({ detachMs: 400 });
+    const asked: unknown[] = [];
+    const acquire = factory(api, {
+      spec: {
+        image: async (session) => {
+          asked.push(session);
+          return `team/base:${session.sessionId}`;
+        },
+      },
+    });
+    const rec = memoryRecord();
+    const m1 = await track(acquire(invocation({ count: 1, fenced: true }, { record: rec.store }).request));
+    await run(m1, 'echo kept > note.txt');
+    await m1.close();
+    expect(asked).toEqual([{ sessionId: SESSION, region: 'iad1' }]);
+    expect(api.vms.get(NAME)!.create.source).toEqual({ image: `team/base:${SESSION}` });
+    expect(rec.get()!.image).toBe(`team/base:${SESSION}`);
+
+    // The next turn reuses the running VM: no call to the hook, and the record keeps the image the VM booted from.
+    await (await track(acquire(invocation({ count: 2, fenced: true }, { record: rec.store }).request))).close();
+    expect(asked).toHaveLength(1);
+    expect(rec.get()!.image).toBe(`team/base:${SESSION}`);
+
+    // The VM stops: the restart asks the hook again (once, though the create waits for the Drive to detach) and comes back from the same base, the Drive's files kept.
+    await api.stopVm(NAME);
+    const m3 = await track(acquire(invocation({ count: 3, fenced: true }, { record: rec.store }).request));
+    expect(asked).toEqual([
+      { sessionId: SESSION, region: 'iad1' },
+      { sessionId: SESSION, region: 'iad1' },
+    ]);
+    expect(api.calls.filter((c) => c.startsWith('createSandbox')).length).toBeGreaterThan(2);
+    expect(api.vms.get(NAME)!.create.source).toEqual({ image: `team/base:${SESSION}` });
+    expect(await run(m3, 'cat note.txt')).toBe('kept');
+    await m3.close();
+
+    // Deleted between turns: again.
+    await (await api.getSandbox(NAME))!.delete();
+    await (await track(acquire(invocation({ count: 4, fenced: true }, { record: rec.store }).request))).close();
+    expect(asked).toHaveLength(3);
+  });
+
+  it('boots from the snapshot a hook returns, in the Drive\'s region, and records it', async () => {
+    const api = fakeApi();
+    api.addDrive(NAME, 'fra1');
+    const acquire = factory(api, { spec: { image: ({ region }) => ({ snapshot: `snap_${region}` }) } });
+    const rec = memoryRecord();
+    await (await track(acquire(invocation({ count: 1, fenced: true }, { record: rec.store }).request))).close();
+    expect(api.vms.get(NAME)!.create.source).toEqual({ snapshot: 'snap_fra1' });
+    expect(rec.get()!.image).toBe('snapshot:snap_fra1');
+  });
+
+  it('refuses what a hook returns that is no image, creating no VM; a hook that throws fails the attach as it is', async () => {
+    for (const bad of ['', { snapshot: '' }, { image: 'x' }, 42, undefined]) {
+      const api = fakeApi();
+      const acquire = factory(api, { spec: { image: () => bad as never } });
+      const err = await rejection(acquire(invocation({ count: 1, fenced: true }).request));
+      expect(err).toBeInstanceOf(TypeError);
+      expect(String(err)).toMatch(/image hook must return a VCR image name or \{ snapshot: id \}/);
+      expect(api.calls.some((c) => c.startsWith('createSandbox'))).toBe(false);
+    }
+    const api = fakeApi();
+    const boom = new Error('the image registry is down');
+    const acquire = factory(api, {
+      spec: {
+        image: () => {
+          throw boom;
+        },
+      },
+    });
+    expect(await rejection(acquire(invocation({ count: 1, fenced: true }).request))).toBe(boom);
+    expect(api.calls.some((c) => c.startsWith('createSandbox'))).toBe(false);
+  });
+
+  it('an unfenced delivery never asks the hook (it creates no VM)', async () => {
+    const api = fakeApi();
+    let asked = 0;
+    const acquire = factory(api, { spec: { image: () => (asked++, 'stand-in') } });
+    expect(await rejection(acquire(invocation({ count: 1, fenced: false }).request))).toBeInstanceOf(Yield);
+    expect(asked).toBe(0);
+  });
+});
+
 describe("the session factory: the plan's limits, learned", () => {
   const logs = () => {
     const lines: { message: string; fields?: Record<string, unknown> }[] = [];

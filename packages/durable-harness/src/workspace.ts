@@ -190,6 +190,20 @@ export interface SandboxBudget {
   vmSeconds?: number;
 }
 
+/** What a session VM boots from: a VCR image name, or `{ snapshot: id }` (a Vercel Sandbox snapshot id). */
+export type SandboxImage = string | { readonly snapshot: string };
+
+/** What `SandboxImageHook` is told about the VM it picks the image for. */
+export interface SandboxImageContext {
+  /** The session (its run id), as `sandboxName(sessionId)` takes it. */
+  readonly sessionId: string;
+  /** The region the VM boots in: its Drive's, which never moves (a snapshot must be in it). */
+  readonly region: string;
+}
+
+/** `sandbox({ image })` as a function of the session: called each time a new VM is created for it (see `SandboxOptions.image`). */
+export type SandboxImageHook = (session: SandboxImageContext) => SandboxImage | Promise<SandboxImage>;
+
 export interface SandboxOptions {
   /**
    * The Vercel region of the session's VM and Drive (they must match, and a
@@ -204,8 +218,17 @@ export interface SandboxOptions {
    * and the pinned harness binaries (built by durable-harness's recipe).
    * Default: a base snapshot per project that durable-harness builds on
    * first use for its pinned versions.
+   *
+   * Or a function of the session (`SandboxImageHook`), returning either: it
+   * is called whenever a new VM is created for the session (its first boot,
+   * and every restart after the VM stopped, timed out or was replaced), never
+   * on a turn that reuses the running VM, and what it returns is checked as
+   * a static `image` is. Return the same image for a session on every call
+   * and each restart comes back from the same base; only `/workspace` (the
+   * Drive) carries files from one VM to the next. A hook that throws fails
+   * that attach, and the turn is retried as after any other failed attach.
    */
-  image?: string | { readonly snapshot: string };
+  image?: SandboxImage | SandboxImageHook;
   /** The VM's vCPUs (2 GiB of memory each). Default 2. */
   vcpus?: 1 | 2 | 4 | 8;
   /** See `SandboxNetwork`. Default `allow-all`. */
@@ -263,7 +286,8 @@ export interface SandboxWorkspace {
   readonly kind: 'sandbox';
   /** Undefined: decided on the session's first invocation (see `SandboxOptions.region`). */
   readonly region?: string;
-  readonly image?: string | { readonly snapshot: string };
+  /** A hook is kept checking what it returns, at each VM create. */
+  readonly image?: SandboxImage | SandboxImageHook;
   readonly vcpus: 1 | 2 | 4 | 8;
   readonly network: SandboxNetwork;
   readonly env: Readonly<Record<string, string>>;
@@ -394,14 +418,28 @@ export function sandbox(first: SandboxOptions | SandboxWorkspace = {}, overrides
   return brand(descriptor) as unknown as SandboxWorkspace;
 }
 
-function sandboxImage(image: unknown): string | { readonly snapshot: string } | undefined {
+/** A hook `sandbox()` wrapped (so a derived descriptor doesn't wrap it twice): its result checked as a static image is. */
+const CHECKED_HOOK = Symbol('durable-harness.checkedImageHook');
+
+function sandboxImage(image: unknown): SandboxImage | SandboxImageHook | undefined {
   if (image === undefined) return undefined;
+  if (typeof image === 'function') {
+    if ((image as { [CHECKED_HOOK]?: true })[CHECKED_HOOK]) return image as SandboxImageHook;
+    const hook = image as SandboxImageHook;
+    const checked: SandboxImageHook = async (session) => staticImage(await hook(session), 'hook must return');
+    Object.defineProperty(checked, CHECKED_HOOK, { value: true });
+    return Object.freeze(checked);
+  }
+  return staticImage(image, 'must be');
+}
+
+function staticImage(image: unknown, verb: 'must be' | 'hook must return'): SandboxImage {
   if (typeof image === 'string' && image.length > 0) return image;
   if (typeof image === 'object' && image !== null && Object.keys(image).length === 1) {
     const snapshot = (image as { snapshot?: unknown }).snapshot;
     if (typeof snapshot === 'string' && snapshot.length > 0) return Object.freeze({ snapshot });
   }
-  throw invalid('sandbox', 'image', 'must be a VCR image name or { snapshot: id }', image);
+  throw invalid('sandbox', 'image', `${verb} a VCR image name or { snapshot: id }`, image);
 }
 
 function sandboxNetwork(network: unknown): SandboxNetwork {

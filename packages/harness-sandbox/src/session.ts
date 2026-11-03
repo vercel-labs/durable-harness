@@ -119,10 +119,18 @@ export function brandForTests<M extends Omit<SessionMachine, 'brand'>>(machine: 
 // ---------------------------------------------------------------------------
 // Options
 
+/** A static `SandboxSpec['image']`. */
+export type SpecImage = string | { readonly snapshot: string };
+
 /** The descriptor fields the factory reads: durable-harness's `SandboxWorkspace`, structurally (this package can't import it). */
 export interface SandboxSpec {
   readonly region?: string;
-  readonly image?: string | { readonly snapshot: string };
+  /**
+   * What a VM boots from; a function is asked each time a VM is created for
+   * the session (never when a running one is reused), with the session and
+   * the Drive's region.
+   */
+  readonly image?: SpecImage | ((session: { readonly sessionId: string; readonly region: string }) => SpecImage | Promise<SpecImage>);
   readonly vcpus: number;
   readonly network: 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
   readonly idleMs: number;
@@ -526,7 +534,9 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
       }
     };
     onDrive(a.drive ?? (await driveFor(name)));
-    next = { ...next, image: imageLabel() };
+    // A hook's image is known only once a VM is created from it (below); a reused VM keeps the recorded one.
+    if (typeof spec.image !== 'function') next = { ...next, image: imageLabel(spec.image) };
+    else if (next.image === undefined) next = { ...next, image: 'hook' };
     // A drill armed for a turn's start (D2, D3): on the session's running VM, before this invocation's first attach.
     if (fenced && !a.attached && request.drills) await attachDrill(a, request.drills);
 
@@ -535,10 +545,10 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     let rotated = false;
     for (;;) {
       if (request.signal.aborted) throw request.signal.reason ?? new Error('harness-sandbox: acquire aborted');
-      const { vm, fresh } = await vmFor(a, deadline, fenced, () => budgetLeftMs(next), onDrive);
+      const { vm, fresh, image } = await vmFor(a, deadline, fenced, () => budgetLeftMs(next), onDrive);
       a.vm = vm;
       if (fresh) {
-        next = { ...next, vmSeconds: charged(next, vm.timeout) };
+        next = { ...next, vmSeconds: charged(next, vm.timeout), ...(image !== undefined ? { image } : {}) };
         await save();
       } else if (vm.fenceMark !== undefined && vm.fenceMark > fence.count) throw againstUs(a, `the VM's dh-fence is ${vm.fenceMark}`);
       if (!fresh && vm.startedAt + vm.timeout <= Date.now() && budgetLeftMs(next) <= 0) throw new SandboxBudgetExceeded(spec.budget.vmSeconds);
@@ -675,9 +685,20 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     return Math.round((record.vmSeconds ?? 0) + Math.max(ms, 0) / 1000);
   }
 
-  function imageLabel(): string {
-    const image = spec.image;
+  function imageLabel(image: SpecImage | undefined): string {
     return typeof image === 'string' ? image : image ? `snapshot:${image.snapshot}` : 'base';
+  }
+
+  /**
+   * The hook's image for a VM of this session, checked (durable-harness's
+   * `sandbox()` checks it too; this is the factory's own guard for a spec
+   * built without it).
+   */
+  async function hookImage(a: Attach, hook: Extract<SandboxSpec['image'], Function>): Promise<SpecImage> {
+    const image: unknown = await hook({ sessionId: a.sessionId, region: a.drive!.region });
+    if (typeof image === 'string' && image.length > 0) return image;
+    if (isObject(image) && Object.keys(image).length === 1 && typeof image.snapshot === 'string' && image.snapshot.length > 0) return { snapshot: image.snapshot };
+    throw new TypeError('harness-sandbox: the image hook must return a VCR image name or { snapshot: id }');
   }
 
   async function driveFor(name: string): Promise<DriveInfo> {
@@ -708,8 +729,10 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
   }
 
   /** The VM to arm: reused while running, created when there is none, replaced (owner only) when stopped, failed or aborted. */
-  async function vmFor(a: Attach, deadline: number, fenced: boolean, budgetLeft: () => number, onDrive: (drive: DriveInfo) => void): Promise<{ vm: VmHandle; fresh: boolean }> {
+  async function vmFor(a: Attach, deadline: number, fenced: boolean, budgetLeft: () => number, onDrive: (drive: DriveInfo) => void): Promise<{ vm: VmHandle; fresh: boolean; image?: string }> {
     const until = Date.now() + busyMs;
+    /** The hook's image, asked once for this VM (a create retried while the Drive detaches doesn't ask again), and only when a VM is created. */
+    let hooked: Promise<SpecImage> | undefined;
     let wait = 250;
     let heldLogged = false;
     /** The base is asked for again (`refresh`) once, on the create after one found it gone. */
@@ -730,7 +753,12 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
         try {
           const refresh = refreshBase === 'next';
           if (refresh) refreshBase = 'done';
-          return { vm: await create(a, deadline, budgetLeft(), refresh), fresh: true };
+          const hook = spec.image;
+          if (typeof hook === 'function') {
+            const image = await (hooked ??= hookImage(a, hook));
+            return { vm: await create(a, deadline, budgetLeft(), image, refresh), fresh: true, image: imageLabel(image) };
+          }
+          return { vm: await create(a, deadline, budgetLeft(), hook, refresh), fresh: true };
         } catch (err) {
           if (err instanceof ApiConflict && err.kind === 'name') continue; // another driver just created it: reuse its VM
           if (err instanceof ApiConflict && err.kind === 'drive_attached') {
@@ -740,8 +768,9 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
             continue;
           }
           if (err instanceof ApiConflict && err.kind === 'drive_changed') {
-            // The Drive was deleted and made again since it was checked: check the new one (the files-lost note follows).
+            // The Drive was deleted and made again since it was checked: check the new one (the files-lost note follows), and ask the hook again for its region.
             onDrive(await driveFor(a.name!));
+            hooked = undefined;
             continue;
           }
           if (refreshBase === 'no' && !spec.image && options.base && snapshotGone(err)) {
@@ -763,11 +792,11 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     }
   }
 
-  async function create(a: Attach, deadline: number, budgetLeftMs: number, refreshBase: boolean): Promise<VmHandle> {
+  async function create(a: Attach, deadline: number, budgetLeftMs: number, image: SpecImage | undefined, refreshBase: boolean): Promise<VmHandle> {
     if (budgetLeftMs < 1_000) throw new SandboxBudgetExceeded(spec.budget.vmSeconds);
     const region = a.drive!.region;
     const source: BootSource | undefined =
-      typeof spec.image === 'string' ? { image: spec.image } : spec.image ? { snapshot: spec.image.snapshot } : await options.base?.(region, refreshBase ? { refresh: true } : undefined);
+      typeof image === 'string' ? { image } : image ? { snapshot: image.snapshot } : await options.base?.(region, refreshBase ? { refresh: true } : undefined);
     if (!source) throw new Error('harness-sandbox: no image for the session VM: pass sandbox({ image }) or a base');
     // Within the cap as known: until an extension proved a larger one, the assumed (smallest) cap, so a create never fails on it (extending later is cheap, ~270 ms).
     const wanted = Math.max(deadline - Date.now(), 0) + spec.idleMs;

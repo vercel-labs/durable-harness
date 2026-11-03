@@ -89,6 +89,36 @@ describe('sandbox()', () => {
     expect(() => sandbox({ credentials: { token: '', teamId: 't', projectId: 'p' } })).toThrow(/non-empty token/);
   });
 
+  it('takes image as a function of the session, checking what it returns as a static image is checked', async () => {
+    const seen: unknown[] = [];
+    const ws = sandbox({
+      image: (session) => {
+        seen.push(session);
+        return session.sessionId === 'wrun_a' ? 'team/base:a' : session.sessionId === 'wrun_s' ? { snapshot: 'snap_1' } : session.sessionId === 'wrun_async' ? Promise.resolve('team/base:async') : ({ snapshot: '' } as never);
+      },
+    });
+    const hook = ws.image as Exclude<typeof ws.image, string | { snapshot: string } | undefined>;
+    expect(typeof hook).toBe('function');
+    expect(await hook({ sessionId: 'wrun_a', region: 'iad1' })).toBe('team/base:a');
+    expect(await hook({ sessionId: 'wrun_s', region: 'iad1' })).toEqual({ snapshot: 'snap_1' });
+    expect(await hook({ sessionId: 'wrun_async', region: 'iad1' })).toBe('team/base:async');
+    await expect(hook({ sessionId: 'wrun_bad', region: 'iad1' })).rejects.toThrow(/sandbox\(\{ image \}\) hook must return a VCR image name or \{ snapshot: id \}/);
+    expect(seen).toEqual([
+      { sessionId: 'wrun_a', region: 'iad1' },
+      { sessionId: 'wrun_s', region: 'iad1' },
+      { sessionId: 'wrun_async', region: 'iad1' },
+      { sessionId: 'wrun_bad', region: 'iad1' },
+    ]);
+    for (const bad of ['', 42, null, { snapshot: 'x', image: 'y' }]) {
+      const badHook = sandbox({ image: () => bad as never }).image as typeof hook;
+      await expect(badHook({ sessionId: 's', region: 'iad1' })).rejects.toThrow(/image/);
+    }
+    // A derived descriptor keeps the same checked hook (not wrapped again); a static image is unchanged.
+    expect(sandbox(ws, { vcpus: 4 }).image).toBe(hook);
+    expect(sandbox({ image: 'team/base:v1' }).image).toBe('team/base:v1');
+    expect(sandbox({ image: { snapshot: 'snap_2' } }).image).toEqual({ snapshot: 'snap_2' });
+  });
+
   it('is not fooled by look-alikes', () => {
     expect(isWorkspace({ kind: 'sandbox' })).toBe(false);
     expect(isWorkspace(null)).toBe(false);
