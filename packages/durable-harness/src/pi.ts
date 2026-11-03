@@ -14,8 +14,8 @@ export const GATEWAY_PROVIDER = 'vercel-ai-gateway';
 export interface PiOptions extends Omit<PiHarnessOptions, 'model' | 'streamFn' | 'getApiKey'>, AgentOptions {
   /**
    * An AI Gateway model id (`anthropic/claude-sonnet-4.5`), served through
-   * pi-ai's Gateway provider, or a pi-ai `Model` of your own (then pass
-   * `streamFn` too).
+   * pi-ai's Gateway provider (new IDs are discovered from Gateway on first
+   * use), or a pi-ai `Model` of your own (then pass `streamFn` too).
    */
   model: string | Model<any>;
   /** Appended as Pi's system prompt (`systemPrompt` is the same thing). */
@@ -56,19 +56,13 @@ export function pi(options: PiOptions): Agent {
   const { model, instructions, name = 'pi', ...harnessOptions } = rest;
   let built: Promise<Harness> | undefined;
   // pi-ai loads on the first drive: a route that only reads a session loads none of it.
-  const build = async (): Promise<Harness> => {
+  const build = async (signal: AbortSignal): Promise<Harness> => {
     let resolved: Model<any>;
     let streamFn = harnessOptions.streamFn;
     if (typeof model === 'string') {
-      const [{ createModels }, { vercelAIGatewayProvider }] = await Promise.all([
-        import('@earendil-works/pi-ai'),
-        import('@earendil-works/pi-ai/providers/vercel-ai-gateway'),
-      ]);
-      const models = createModels();
-      models.setProvider(vercelAIGatewayProvider());
-      const found = models.getModel(GATEWAY_PROVIDER, model);
-      if (!found) throw new Error(`durable-harness/pi: pi-ai does not know the Gateway model ${model}`);
-      resolved = found;
+      const { createGatewayModels, resolveGatewayModel } = await import('./pi-gateway.ts');
+      const models = createGatewayModels({ apiKey: () => harnessOptions.getApiKey ? harnessOptions.getApiKey(GATEWAY_PROVIDER) : gatewayCredential() });
+      resolved = await resolveGatewayModel(models, model, signal);
       streamFn ??= models.streamSimple.bind(models);
     } else {
       resolved = model;
@@ -86,7 +80,7 @@ export function pi(options: PiOptions): Agent {
     name,
     modelCalls: 'self',
     async drive(ctx) {
-      return (await (built ??= build().catch((error) => {
+      return (await (built ??= build(ctx.signal).catch((error) => {
         built = undefined;
         throw error;
       }))).drive(ctx);

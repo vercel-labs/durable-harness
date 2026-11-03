@@ -36,15 +36,13 @@
  * ```
  */
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { createModels, type MutableModels } from '@earendil-works/pi-ai/models';
-import { vercelAIGatewayProvider } from '@earendil-works/pi-ai/providers/vercel-ai-gateway';
+import type { MutableModels } from '@earendil-works/pi-ai/models';
 import type { AgentChange, Harness, HarnessOptions } from '@earendil-works/pi-durable';
 import type { World } from '@workflow/world';
 import type { ChatRoute } from 'harness-world';
 import { defaultAnchors } from 'harness-world/anchor';
 import { type ChatAuthorize, chatGate } from 'harness-world/authorize';
 import { harnessOfQueue, workflowNameFor } from 'harness-world/names';
-import { gatewayCredential } from 'harness-world-process';
 import { type Backstop, type PiDurability, piDurability, StorageFenced, untilSettled, type WorldStorage } from 'pi-world/durability';
 import { JournalReader, type PiCommit, type PiEntry, type PiSnapshot, type PiTask } from 'pi-world/reader';
 import { NOT_RUN, sandboxEnvBuilder } from 'pi-world/sandbox';
@@ -53,6 +51,7 @@ import { waitUntil } from './agent.ts';
 import { resolveEnvironment } from './environments.ts';
 import { register } from './registry.ts';
 import { publicSandboxConfig } from './sandbox-harness.ts';
+import { createGatewayModels } from './pi-gateway.ts';
 import { getWorld } from './world.ts';
 import { isWorkspace, sandbox, type SandboxOptions, type SandboxWorkspace, virtual, type VirtualOptions, type VirtualWorkspace } from './workspace.ts';
 
@@ -401,18 +400,11 @@ async function leaseHarness(sessionId: string | undefined, open: Opener, options
  * Vercel, and locally after `vercel env pull`). Model refs are pi-ai's:
  * `{ provider: GATEWAY_PROVIDER, modelId: 'anthropic/claude-sonnet-4.5' }`.
  * Any other pi-ai provider works the same; this is only the Gateway's.
+ * Call `await models.refresh({ providers: [GATEWAY_PROVIDER] })` before
+ * opening a Harness to add IDs newer than pi-ai's bundled catalog.
  */
 export function gatewayModels(options: { apiKey?: () => Promise<string> } = {}): MutableModels {
-  const apiKey = options.apiKey ?? gatewayCredential;
-  const models = createModels({
-    // The Gateway provider reads AI_GATEWAY_API_KEY from its auth context: a fresh credential per request.
-    authContext: {
-      env: async (key: string) => (key === 'AI_GATEWAY_API_KEY' ? apiKey() : process.env[key]),
-      fileExists: async () => false,
-    },
-  });
-  models.setProvider(vercelAIGatewayProvider());
-  return models;
+  return createGatewayModels(options);
 }
 
 // ---------- optional: reading a session ----------

@@ -12,7 +12,8 @@ Gateway's prices are per token; model registries use prices per million tokens.
 
 For harness-specific configuration, see
 [Codex](../packages/harness-codex/README.md) and
-[OpenCode](../packages/harness-opencode/README.md).
+[OpenCode](../packages/harness-opencode/README.md), or the
+[Pi model guide](pi-model-compatibility.md).
 
 Provider settings also matter. Some reasoning models reject requests that
 disable thinking; choose a setting supported by the routed provider. A
