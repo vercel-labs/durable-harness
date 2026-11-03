@@ -2,7 +2,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RelayedModelRequest } from '../src/environment.ts';
-import { AI_GATEWAY_LANGUAGE_MODEL_ROUTE, CLAUDE_ROUTES, CODEX_ROUTES, GatewayError, type GatewayLedger, gatewayHandler, type GatewayHandlerOptions, matchRoute, parseStrictJson } from '../src/gateway.ts';
+import { AI_GATEWAY_LANGUAGE_MODEL_ROUTE, CLAUDE_ROUTES, CODEX_ROUTES, costOf, GatewayError, type GatewayLedger, gatewayHandler, type GatewayHandlerOptions, matchRoute, parseStrictJson } from '../src/gateway.ts';
 
 /**
  * `gatewayHandler`'s policy (docs/workspaces.md §5.5, §11.4 A3): the VM is
@@ -529,7 +529,75 @@ describe('gatewayHandler: headers', () => {
   });
 });
 
+describe("costOf: the Gateway's cost, read from the parsed response", () => {
+  const sse = (...events: unknown[]) => events.map((e) => `event: x\ndata: ${JSON.stringify(e)}\n\n`).join('');
+  const delta = (gateway: Record<string, unknown>) => ({ type: 'message_delta', provider_metadata: { gateway } });
+
+  it('reads exponent forms whole, as strings and as numbers', () => {
+    expect(costOf(sse(delta({ gatewayCost: '4.2e-7' })))).toBe(4.2e-7);
+    expect(costOf(sse(delta({ gatewayCost: '1E-6' })))).toBe(1e-6);
+    expect(costOf(sse(delta({ cost: '3e+2' })))).toBe(300);
+    expect(costOf(sse(delta({ gatewayCost: 4.2e-7 })))).toBe(4.2e-7);
+    // JSON.stringify writes a small number in exponent form, so this event carries `1e-7` literally.
+    expect(sse(delta({ gatewayCost: 1e-7 }))).toContain('"gatewayCost":1e-7');
+    expect(costOf(sse(delta({ gatewayCost: 1e-7 })))).toBe(1e-7);
+  });
+
+  it('reads plain decimals, string- or number-valued, and prefers `gatewayCost` to `cost`', () => {
+    expect(costOf(sse(delta({ gatewayCost: '0.0123' })))).toBe(0.0123);
+    expect(costOf(sse(delta({ gatewayCost: 0.0123 })))).toBe(0.0123);
+    expect(costOf(sse(delta({ cost: '2' })))).toBe(2);
+    expect(costOf(sse(delta({ routing: { cost: '9' }, cost: '0.5', gatewayCost: '1.25' })))).toBe(1.25);
+  });
+
+  it('reads the AI SDK route (`providerMetadata`) and a whole JSON body', () => {
+    expect(costOf(sse({ type: 'finish', providerMetadata: { gateway: { cost: '0.0001' } } }))).toBe(0.0001);
+    expect(costOf(JSON.stringify({ content: [], providerMetadata: { gateway: { cost: 5e-5 } } }))).toBe(5e-5);
+    expect(costOf(JSON.stringify({ type: 'message', content: [], provider_metadata: { gateway: { gatewayCost: '0.02' } } }))).toBe(0.02);
+    expect(costOf(sse({ type: 'response.completed', response: { provider_metadata: { gateway: { gatewayCost: '0.3' } } } }))).toBe(0.3);
+  });
+
+  it('ignores a `cost` anywhere but the Gateway metadata', () => {
+    const decoys = sse(
+      { type: 'content_block_delta', delta: { type: 'text_delta', text: '"gateway":{"cost":"999"} "gatewayCost":"999"' } },
+      { type: 'content_block_start', content_block: { type: 'tool_use', input: { cost: 7, gateway: { cost: 7 }, provider_metadata: { gateway: { gatewayCost: 7 } } } } },
+      { type: 'message_delta', usage: { cost: 8 }, gateway: { cost: 8 } },
+    );
+    expect(costOf(decoys)).toBeUndefined();
+    expect(costOf(decoys + sse(delta({ gatewayCost: '0.004' })))).toBe(0.004);
+    const body = { type: 'message', content: [{ type: 'tool_use', input: { provider_metadata: { gateway: { gatewayCost: '7' } } } }], cost: 7 };
+    expect(costOf(JSON.stringify(body))).toBeUndefined();
+  });
+
+  it('reads a window that starts mid-event or mid-body, and nothing from an event that is cut off', () => {
+    const stream = sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'x'.repeat(200) } }, delta({ gatewayCost: '2.5e-4' }));
+    expect(costOf(stream.slice(40))).toBe(2.5e-4);
+    expect(costOf(stream.slice(0, stream.lastIndexOf('}') - 3))).toBeUndefined();
+    // A JSON body longer than the window: only its tail is there, and the top-level metadata is still read, not the one nested in the content.
+    const body = JSON.stringify({ type: 'message', content: [{ type: 'tool_use', input: { provider_metadata: { gateway: { gatewayCost: '7' } } } }, { type: 'text', text: 'y'.repeat(200) }], provider_metadata: { gateway: { routing: { a: '}' }, gatewayCost: '6e-6' } }, usage: { output_tokens: 3 } });
+    expect(costOf(body.slice(30))).toBe(6e-6);
+    expect(costOf(body.slice(30, body.indexOf('"usage"')))).toBeUndefined();
+    const nestedOnly = JSON.stringify({ type: 'message', content: [{ type: 'text', text: 'y'.repeat(50) }, { type: 'tool_use', input: { provider_metadata: { gateway: { gatewayCost: '7' } } } }] });
+    expect(costOf(nestedOnly.slice(20))).toBeUndefined();
+  });
+
+  it('gives no figure for garbage, negatives or a malformed cost', () => {
+    for (const text of ['', 'garbage', '{"provider_metadata":', 'data: {not json}\n\n', 'data: [DONE]\n\n']) expect(costOf(text)).toBeUndefined();
+    for (const v of ['abc', '', '-1', '-4.2e-7', '1e', '4.2e-7usd', '0x10', 'Infinity', 'NaN', null, true, {}, [], -1, '1e999']) expect(costOf(sse(delta({ gatewayCost: v })))).toBeUndefined();
+    // A malformed `gatewayCost` is no figure: the plain `cost` beside it is not read in its place.
+    expect(costOf(sse(delta({ cost: '0.5', gatewayCost: 'n/a' })))).toBeUndefined();
+  });
+});
+
 describe('gatewayHandler: budget and concurrency', () => {
+  it('charges a cost the Gateway wrote in exponent form at its value', async () => {
+    const gw = await gateway({ cost: '4.2e-7' });
+    const shared = ledger();
+    const { h } = handler(gw.url, { ledger: shared, budget: { turnUsd: 1, sessionUsd: 1 } });
+    for (let i = 0; i < 3; i++) await drain((await h(req('/v1/messages'), signal())).body);
+    expect(shared.session).toBeCloseTo(3 * 4.2e-7, 12);
+  });
+
   it('records the Gateway\'s cost and refuses past the turn cap, then past the session cap across a redelivery (a new handler on the same ledger)', async () => {
     const gw = await gateway({ cost: '1.25' });
     const shared = ledger();
