@@ -125,11 +125,20 @@ describe('sandbox()', () => {
       expect(sandbox({ network: { subnets: { allow: ['192.168.0.0/16'] } } }).network).toEqual({ subnets: { allow: ['192.168.0.0/16'] } });
     });
 
+    it('takes a whole-label wildcard anywhere, as the firewall does', () => {
+      const allow = ['api.*.example.com', '*.example.com', 'example.*', '*.*', 'localhost', '*'];
+      expect(sandbox({ network: { allow } }).network).toEqual({ allow });
+      expect(sandbox({ network: { allow: { 'api.*.example.com': [] } } }).network).toEqual({ allow: { 'api.*.example.com': [] } });
+    });
+
     it('refuses bad shapes, naming where, never a header value', () => {
       const bad: [unknown, RegExp][] = [
         [{}, /needs allow or subnets/],
         [{ allow: ['github.com'], deny: ['x.com'] }, /no key "deny"/],
         [{ allow: { 'not a domain': [] } }, /network\.allow must list domains/],
+        [{ allow: ['*example.com'] }, /network\.allow must list domains/],
+        [{ allow: { 'exa*mple.com': [] } }, /network\.allow must list domains/],
+        [{ allow: ['example..com'] }, /network\.allow must list domains/],
         [{ allow: { 'github.com': {} } }, /must be a list of rules/],
         [{ allow: { 'github.com': [{ match: { method: ['GET'] } }] } }, /exactly one of transform, forwardURL or response/],
         [{ allow: { 'github.com': [{ transform: [{ headers: { authorization: SECRET } }], response: { statusCode: 403 } }] } }, /exactly one/],

@@ -243,8 +243,8 @@ const FORCED_403 = Object.freeze([Object.freeze({ response: Object.freeze({ stat
  * A policy as the platform takes it: `allow-all` is custom mode with the
  * forced 403s (the VM's open network, less the hosts it holds no credential
  * for); a custom policy's domains in the record form, and, when it allows
- * every other domain (`*`), the forced 403s for the hosts it doesn't name
- * itself. Rules and subnets pass as given.
+ * every other domain (`*`) or a wildcard that covers one of those hosts, the
+ * forced 403s for the hosts it doesn't name itself. Rules and subnets pass as given.
  */
 export function networkPolicy(network: SandboxNetworkValue, env?: Readonly<Record<string, string | undefined>>): SandboxNetworkPolicy {
   if (network === 'deny-all') return 'deny-all';
@@ -253,9 +253,22 @@ export function networkPolicy(network: SandboxNetworkValue, env?: Readonly<Recor
   const rules: Record<string, unknown[]> = Array.isArray(given.allow)
     ? Object.fromEntries((given.allow as readonly string[]).map((d) => [d, []]))
     : Object.fromEntries(Object.entries((given.allow ?? {}) as Readonly<Record<string, readonly unknown[]>>).map(([d, r]) => [d, [...r]]));
-  const forced = '*' in rules ? Object.fromEntries(forcedHosts(env).filter((h) => !(h in rules)).map((h) => [h, FORCED_403])) : {};
+  // A forced host a wildcard opens (`*`, `*.vercel.sh`, `ai-gateway.*.sh`) is answered 403 unless the policy names it exactly.
+  const patterns = Object.keys(rules).filter((d) => d.includes('*'));
+  const forced = Object.fromEntries(forcedHosts(env).filter((h) => !(h in rules) && patterns.some((d) => wildcardCovers(d, h))).map((h) => [h, FORCED_403]));
   const subnets = given.subnets ? { subnets: { ...(given.subnets.allow ? { allow: [...given.subnets.allow] } : {}), ...(given.subnets.deny ? { deny: [...given.subnets.deny] } : {}) } } : {};
   return { allow: { ...forced, ...rules } as never, ...subnets } as SandboxNetworkPolicy;
+}
+
+/**
+ * Whether the wildcard domain `pattern` may match `host`. Each `*` is taken to
+ * match one or more labels, wider than the firewall may match it, so a forced
+ * 403 is never left out for a host the policy opens.
+ */
+function wildcardCovers(pattern: string, host: string): boolean {
+  if (pattern === '*') return true;
+  const label = (l: string) => (l === '*' ? '[^.]+(?:\\.[^.]+)*' : l.replace(/[.+?^${}()|[\]\\-]/g, '\\$&'));
+  return new RegExp(`^${pattern.split('.').map(label).join('\\.')}$`, 'i').test(host);
 }
 
 /** Every header value a policy sets (its transforms' and its responses'): what an error or a log line must never carry. */

@@ -809,7 +809,7 @@ describe('the session factory: the network policy', () => {
     expect(l.lines.join('\n')).not.toContain('sk-live');
   });
 
-  it('maps a full policy: rules and subnets as given, the forced 403s only with * and only for hosts it does not name', () => {
+  it('maps a full policy: rules and subnets as given, the forced 403s only with a wildcard that covers the host, and only for hosts it does not name', () => {
     const env = { VERCEL_URL: 'app.example.com' };
     expect(networkPolicy(brokered(), env)).toEqual(brokered());
     const open = networkPolicy({ allow: { '*': [], 'ai-gateway.vercel.sh': [{ transform: [{ headers: { authorization: SECRET } }] }] } }, env) as { allow: Record<string, unknown[]> };
@@ -836,6 +836,19 @@ describe('the session factory: pure parts', () => {
     expect(sessionName('prj_b', 'wrun_1')).not.toBe(a);
     expect(sessionName('prj_a', 'wrun_2')).not.toBe(a);
     expect(a.startsWith('dh-probe-')).toBe(false);
+  });
+
+  it('a wildcard that covers a forced host gets its 403 too, unless the policy names the host exactly', () => {
+    const env = { VERCEL_URL: 'app-git-x.vercel.app' };
+    const forced = [{ response: { statusCode: 403 } }];
+    const p = (allow: string[] | Record<string, unknown[]>) => (networkPolicy({ allow } as never, env) as { allow: Record<string, unknown[]> }).allow;
+    expect(p(['*.vercel.sh'])).toEqual({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': forced });
+    expect(p(['api.*.com'])).toEqual({ 'api.*.com': [], 'api.vercel.com': forced });
+    expect(p(['*.*'])).toMatchObject({ 'ai-gateway.vercel.sh': forced, 'api.vercel.com': forced, 'app-git-x.vercel.app': forced });
+    expect(p(['*.VERCEL.app'])).toMatchObject({ 'app-git-x.vercel.app': forced });
+    expect(p({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': [] })).toEqual({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': [] });
+    expect(p(['*.example.com', 'github.com', 'example.*'])).toEqual({ '*.example.com': [], 'github.com': [], 'example.*': [] });
+    expect(p(['vercel.sh'])).toEqual({ 'vercel.sh': [] });
   });
 
   it('maps the network option: allow-all is custom mode with the forced 403s; deny-all and an allow list pass', () => {

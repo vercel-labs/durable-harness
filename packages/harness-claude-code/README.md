@@ -127,6 +127,9 @@ allows it only once the call's intent is in the log.
   VM's policy, rules and all, still applies past it), the listed domains
   for `{ allow }` or a full policy, nothing for `deny-all`. It never sees
   the policy's rules, so no header value reaches the CLI.
+  A domain with a wildcard inside it (`api.*.example.com`) is passed on
+  as written; if Claude's sandbox does not match it the way the VM's
+  firewall does, its commands are refused there, never let further.
 - **The file tools don't write `/workspace/.git` or `/workspace/.claude`**,
   and the CLI gathers no git status of its own (`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS`):
   it would run git in `/workspace` outside its sandbox, and git runs what a

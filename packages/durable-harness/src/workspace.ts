@@ -394,7 +394,13 @@ export function secretValueShape(value: string): string | undefined {
   return undefined;
 }
 const RESERVED_NAME = /^(?:PATH|HOME|USER|SHELL|TMPDIR|LANG|TERM|PWD|XDG_[A-Z_]+|ANTHROPIC_[A-Z_]*|CLAUDE_[A-Z_]*|CODEX_[A-Z_]*|OPENAI_[A-Z_]*|OPENCODE[A-Z_]*|VERCEL_[A-Z_]*|AI_GATEWAY_[A-Z_]*|HARNESS_[A-Z_]*|NODE_OPTIONS|LD_[A-Z_]+|BASH_ENV|ENV)$/;
-const DOMAIN = /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
+/**
+ * A domain the Sandbox firewall takes: labels separated by dots, each a
+ * hostname label or a whole-label wildcard `*` (`*.example.com`,
+ * `api.*.example.com`, `example.*`). The platform refuses a partial wildcard
+ * (`*example.com`, `exa*mple.com`), and so does this.
+ */
+const DOMAIN = /^(?=.{1,253}$)(?:\*|[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:\*|[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/;
 const DRIVE_BLOCK = 4096;
 const DRIVE_MIN = 1024 * 1024 * 1024;
 const DRIVE_MAX = 16 * 1024 ** 4;
@@ -485,7 +491,7 @@ function networkPolicy(network: unknown, where: string): SandboxNetworkPolicy {
   if (network.allow === undefined && network.subnets === undefined) throw fail('', "needs allow or subnets (for no network, use 'deny-all')");
   const out: { allow?: unknown; subnets?: unknown } = {};
   const domain = (d: unknown) => {
-    if (typeof d !== 'string' || (d !== '*' && !DOMAIN.test(d))) throw fail('allow', `must list domains such as example.com, *.example.com or * (got ${describe(d)})`);
+    if (typeof d !== 'string' || (d !== '*' && !DOMAIN.test(d))) throw fail('allow', `must list domains such as example.com, *.example.com, api.*.example.com or * (got ${describe(d)})`);
     return d;
   };
   if (Array.isArray(network.allow)) out.allow = Object.freeze(network.allow.map(domain));
