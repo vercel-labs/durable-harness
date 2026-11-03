@@ -829,14 +829,37 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             await send(note.text, note.pending, { synthetic: 'recovery' });
             await runTurn();
           }
-          // The inbox, one submission per turn.
+          // The inbox, one submission per turn. Each turn, and the idle wait, runs inside an open effect: a delivery that
+          // lands on another process finds the session held there and leaves its prompt to this drive, which picks it
+          // up from the log, instead of starting a second drive that fences this one off the VM (its claim on the drive
+          // is per process). A turn's own error is thrown as it was, outside the effect.
           for (;;) {
             await ctx.refresh();
             let [s] = ctx.pending();
-            if (!s && options.idleMs) [s] = await waitForSubmissions(ctx, { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(options.idleMs)]) });
-            if (!s) break;
-            await send(s.text ?? '', [s]);
-            await runTurn();
+            if (!s && !options.idleMs) break;
+            let ran = false;
+            let failure: unknown;
+            await ctx.effect(`claude-code.inbox:${randomUUID()}`, { name: 'claude-code.inbox', replay: 'never', input: null }, async () => {
+              try {
+                if (!s) [s] = await waitForSubmissions(ctx, { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(options.idleMs!)]) });
+                if (s) {
+                  await send(s.text ?? '', [s]);
+                  await runTurn();
+                  ran = true;
+                }
+                return { prompt: !!s };
+              } catch (err) {
+                if (ctx.signal.aborted) throw err;
+                failure = err;
+                return { failed: true };
+              }
+            });
+            if (failure !== undefined) throw failure;
+            if (ran) continue;
+            // The wait closed empty: a prompt whose delivery found it still open is in the log already.
+            if (ctx.signal.aborted) break;
+            await ctx.refresh();
+            if (ctx.pending().length === 0) break;
           }
           // A model step a crash left open that no request of this drive made again: closed.
           await steps.settleAbandoned();
