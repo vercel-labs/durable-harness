@@ -120,6 +120,13 @@ allows it only once the call's intent is in the log.
   environment and take its socket, so the key would be only a correlation
   id; `unsandboxedCommands: true` (the raw harness only, for the stand-in
   VM's tests) accepts that.
+- **Its network follows the VM's.** The session factory applies
+  `sandbox({ network })` to the VM on every attach (a per-session callback's
+  result included); Claude's own sandbox lets commands reach what the
+  policy names: everything for `allow-all` or a policy that allows `*` (the
+  VM's policy, rules and all, still applies past it), the listed domains
+  for `{ allow }` or a full policy, nothing for `deny-all`. It never sees
+  the policy's rules, so no header value reaches the CLI.
 - **The file tools don't write `/workspace/.git` or `/workspace/.claude`**,
   and the CLI gathers no git status of its own (`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS`):
   it would run git in `/workspace` outside its sandbox, and git runs what a
@@ -157,7 +164,7 @@ one in the tests (`test/fixtures/golden-2.1.289.json`).
 | `builtins` | `false` | Claude Code's own tools in the VM (see [Tools](#tools)) |
 | `disallowedTools` | | More built-ins to turn off, on top of `CLAUDE_BUILTINS_OFF` |
 | `builtinReplay` | `claudeBuiltinReplay` (reads `safe`) | A record or a function: what the recovery note says about an interrupted built-in, and whether its outcome waits for `FSYNC` |
-| `providerTools` | none | Provider-hosted tools (`web_search`, `web_fetch`); refused with `network: 'deny-all'` |
+| `providerTools` | none | Provider-hosted tools (`web_search`, `web_fetch`); refused when the session's network is `deny-all` (a callback's result included) |
 | `model` | `claude-sonnet-4-5` | A native Anthropic id, or a Gateway id (`anthropic/claude-sonnet-4.5` becomes `claude-sonnet-4-5`) |
 | `smallModel` | `model` | The CLI's background calls; allowlisted at the gateway |
 | `instructions` | | Appended to Claude Code's system prompt |

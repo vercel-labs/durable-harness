@@ -10,12 +10,15 @@ import {
   type GatewayLedger,
   gatewayCredential,
   gatewayHandler,
+  gatewayNetwork,
   gatewayUrl,
   isBrandedMachine,
+  type MachineNetworkOption,
   type MachineTail,
   ModelSteps,
   Mutex,
   NativeJournal,
+  networkSummary,
   placeSubmissions,
   recoveryNote,
   restartEvent,
@@ -182,8 +185,13 @@ export interface CodexMachine {
   acquire: AcquireMachine;
   /** `sandbox({ env })`: non-secret variables for app-server and for the model's commands (`shell_environment_policy.set`). */
   env?: Readonly<Record<string, string>>;
-  /** `sandbox({ network })`: the gateway handler refuses what would reach past it through the provider. Default `allow-all`. */
-  network?: 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
+  /**
+   * `sandbox({ network })` (a shorthand, a full policy, or a per-session
+   * callback; the session factory applies it): the gateway handler refuses
+   * what would reach past it through the provider, by its summary
+   * (`networkSummary`; a callback's from the attached machine). Default `allow-all`.
+   */
+  network?: MachineNetworkOption;
   /** `sandbox({ budget })`'s dollar caps, over the turn and the session (each response's cost is in the log). Default none (`Infinity`). */
   budget?: { readonly turnUsd?: number; readonly sessionUsd?: number };
   /** `sandbox({ commandTimeoutMs })`: a built-in command's longest run, within the time left in the invocation. */
@@ -380,7 +388,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   const tools = options.tools ?? [];
   const spec = options.machine;
   const codex = options.test ? { command: options.test.command, args: options.test.args ?? [] } : { command: cliPath(CODEX_CLI), args: [] as string[] };
-  const network = spec?.network === undefined || spec.network === 'allow-all' ? 'allow-all' : spec.network === 'deny-all' ? 'deny-all' : 'custom';
+  // The descriptor's network as a summary; a per-session callback's is known once the attach resolved it (the machine's).
+  const staticNetwork = networkSummary(spec?.network);
   const budget = { turnUsd: spec?.budget?.turnUsd ?? Infinity, sessionUsd: spec?.budget?.sessionUsd ?? Infinity };
   /** Nothing left to do: no turn a crash cut off, nothing in the inbox. */
   const idle = (ctx: DriveContext) => !recoveryNote(ctx.state()) && ctx.pending().length === 0;
@@ -446,7 +455,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       models: { model },
       budget,
       ledger,
-      network,
+      // Read per request: the model calls come over the attached machine, which says what its attach applied.
+      network: () => gatewayNetwork(machine?.network ?? staticNetwork),
       credential: () => inDrive(credential),
       target: options.gatewayUrl ?? gatewayUrl(),
       track: steps.request,
@@ -456,7 +466,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
       ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`codex gateway: ${message}`, fields) } : {}),
     });
-    let machine: SessionMachine;
+    let machine: SessionMachine | undefined;
     try {
       machine = await attachInDrive(ctx, spec.acquire, { model: handler, deadline });
     } catch (err) {

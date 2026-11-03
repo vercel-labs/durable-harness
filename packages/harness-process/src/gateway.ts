@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import { isModelRequest, ResponseCapture } from './agent-runs.ts';
 import type { GatewayErrorCode, GatewayHandler } from './environment.ts';
+import type { GatewayNetwork } from './network.ts';
 
 /**
  * AI Gateway credentials for process harnesses: a fresh credential per call,
@@ -309,8 +310,13 @@ export interface GatewayHandlerOptions {
   ledger: GatewayLedger;
   /** Provider-hosted tools the app opted into. Default none. */
   providerTools?: readonly ProviderTool[];
-  /** The VM's network: provider-hosted tools are refused under `deny-all`, whatever `providerTools` says. */
-  network?: 'allow-all' | 'deny-all' | 'custom';
+  /**
+   * The VM's network: provider-hosted tools are refused under `deny-all`,
+   * whatever `providerTools` says, and provider-side fetches allowed only
+   * under `allow-all`. A function is read at each request (a per-session
+   * policy is known once the attach resolved it: `gatewayNetwork(machine.network)`).
+   */
+  network?: GatewayNetwork | (() => GatewayNetwork);
   /** Clamp output-token limits to this. Default 128 000. */
   maxOutputTokens?: number;
   /** Default `gatewayCredential`, called per request. */
@@ -923,7 +929,8 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
   }
   if (typeof options.models?.model !== 'string' || !options.models.model) throw new TypeError('harness-world-process gatewayHandler: `models.model` is required');
   const allowed = new Set([options.models.model, ...(options.models.smallModel ? [options.models.smallModel] : [])]);
-  const providerTools = new Set(options.network === 'deny-all' ? [] : (options.providerTools ?? []));
+  const network = (): GatewayNetwork | undefined => (typeof options.network === 'function' ? options.network() : options.network);
+  const optedIn = new Set(options.providerTools ?? []);
   const maxTokens = options.maxOutputTokens ?? 128_000;
   const credential = options.credential ?? gatewayCredential;
   const target = options.target ?? gatewayUrl();
@@ -942,14 +949,16 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
       return id;
     },
     providerTool(tool) {
-      if (!providerTools.has(tool)) throw refuse('forbidden', `the provider-hosted tool ${tool} is not enabled${options.network === 'deny-all' ? " (network: 'deny-all')" : ''}`);
+      const denied = network() === 'deny-all';
+      if (denied || !optedIn.has(tool)) throw refuse('forbidden', `the provider-hosted tool ${tool} is not enabled${denied ? " (network: 'deny-all')" : ''}`);
     },
     clampTokens(value) {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw refuse('bad_request', 'an output token limit must be a positive integer');
       return Math.min(value, maxTokens);
     },
     fetches(what) {
-      if (options.network !== 'allow-all') throw refuse('forbidden', `${what} makes the provider fetch it, which the session's network (${options.network ?? 'unset'}) doesn't allow`);
+      const now = network();
+      if (now !== 'allow-all') throw refuse('forbidden', `${what} makes the provider fetch it, which the session's network (${now ?? 'unset'}) doesn't allow`);
     },
   };
 

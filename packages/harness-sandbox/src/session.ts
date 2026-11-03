@@ -30,8 +30,10 @@
  *    CLI downgrade (`Unavailable('cli_version')`). The arm is the proof of
  *    ownership: only once the relay accepted it does the owner rotate a VM
  *    too close to the plan's cap (between turns), re-apply the network
- *    policy (`update({ networkPolicy })`, which raises the VM's `dh-fence`
- *    tag) and extend the VM's timeout to the invocation's end plus `idleMs`,
+ *    policy (the descriptor's, or what its callback returns for the session,
+ *    resolved once per acquire; `update({ networkPolicy })`, which raises the
+ *    VM's `dh-fence` tag; its header values are kept out of the errors and
+ *    the log) and extend the VM's timeout to the invocation's end plus `idleMs`,
  *    within the plan's cap and the session's `budget.vmSeconds` (recorded at
  *    once, before the sockets);
  * 5. dials `/ctl` and `/model` (the model calls go to the acquire's
@@ -74,8 +76,9 @@
  */
 import { ATTACH_DRILLS, type DrillTarget, Unavailable, Yield } from 'harness-world';
 import { machineBrand, type BrandedMachine } from 'harness-world-process/machine-brand';
-import type { AcquireDrills, AcquireMachine, AcquireMachineRequest, FenceToken, GatewayHandler, MachineRecord, SessionMachine } from 'harness-world-process';
+import type { AcquireDrills, AcquireMachine, AcquireMachineRequest, FenceToken, GatewayHandler, MachineRecord, MachineNetwork, SessionMachine } from 'harness-world-process';
 import { ApiConflict, apiErrorOf, type ApiCredentials, type BootSource, type DriveInfo, FENCE_TAG, type SandboxApi, type SandboxNetworkPolicy, type VmHandle, vercelSandboxApi } from './api.ts';
+import { networkSummary } from 'harness-world-process/network';
 import { CLAUDE_CLI, CODEX_CLI } from './clis.ts';
 import { fencedToken, sessionMachine } from './machine.ts';
 import { defaultRegion, sessionName } from './names.ts';
@@ -124,7 +127,8 @@ export interface SandboxSpec {
   readonly region?: string;
   readonly image?: string | { readonly snapshot: string };
   readonly vcpus: number;
-  readonly network: 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
+  /** See `SandboxNetworkOption`: applied at create and re-applied on every attach. */
+  readonly network: SandboxNetworkOption;
   readonly idleMs: number;
   readonly driveSize: number;
   /** A command's longest run (`sandbox({ commandTimeoutMs })`). Default `RemoteMachine`'s. */
@@ -216,11 +220,83 @@ function forcedHosts(env: Readonly<Record<string, string | undefined>> = process
   return [...hosts];
 }
 
-/** The descriptor's `network` as the platform's policy: custom mode with the forced 403s for `allow-all`. */
-export function networkPolicy(network: SandboxSpec['network'], env?: Readonly<Record<string, string | undefined>>): SandboxNetworkPolicy {
+/** A network policy as `sandbox({ network })` takes it: a shorthand (`{ allow: [domains] }`) or `@vercel/sandbox`'s full `NetworkPolicy`. */
+export type SandboxNetworkValue = 'allow-all' | 'deny-all' | { readonly allow: readonly string[] } | SandboxNetworkPolicy;
+
+/** The session a per-session network callback is called for. */
+export interface SandboxNetworkSession {
+  /** The session (`runId`). */
+  readonly sessionId: string;
+}
+
+/**
+ * The descriptor's `network`: a policy, or a callback the factory calls for
+ * the session on every attach, before the policy is applied (at create, and
+ * re-applied to a running VM), so a policy can carry what is read per session
+ * (a header transform's credential) and is never left as an earlier attach set it.
+ */
+export type SandboxNetworkOption = SandboxNetworkValue | ((session: SandboxNetworkSession) => SandboxNetworkValue | Promise<SandboxNetworkValue>);
+
+const FORCED_403 = Object.freeze([Object.freeze({ response: Object.freeze({ statusCode: 403 }) })]);
+
+/**
+ * A policy as the platform takes it: `allow-all` is custom mode with the
+ * forced 403s (the VM's open network, less the hosts it holds no credential
+ * for); a custom policy's domains in the record form, and, when it allows
+ * every other domain (`*`), the forced 403s for the hosts it doesn't name
+ * itself. Rules and subnets pass as given.
+ */
+export function networkPolicy(network: SandboxNetworkValue, env?: Readonly<Record<string, string | undefined>>): SandboxNetworkPolicy {
   if (network === 'deny-all') return 'deny-all';
-  if (network === 'allow-all') return { allow: { ...Object.fromEntries(forcedHosts(env).map((h) => [h, [{ response: { statusCode: 403 } }]])), '*': [] } };
-  return { allow: Object.fromEntries(network.allow.map((d) => [d, []])) };
+  if (network === 'allow-all') return { allow: { ...Object.fromEntries(forcedHosts(env).map((h) => [h, FORCED_403 as never])), '*': [] } };
+  const given = network as { allow?: readonly string[] | Readonly<Record<string, readonly unknown[]>>; subnets?: { allow?: readonly string[]; deny?: readonly string[] } };
+  const rules: Record<string, unknown[]> = Array.isArray(given.allow)
+    ? Object.fromEntries((given.allow as readonly string[]).map((d) => [d, []]))
+    : Object.fromEntries(Object.entries((given.allow ?? {}) as Readonly<Record<string, readonly unknown[]>>).map(([d, r]) => [d, [...r]]));
+  const forced = '*' in rules ? Object.fromEntries(forcedHosts(env).filter((h) => !(h in rules)).map((h) => [h, FORCED_403])) : {};
+  const subnets = given.subnets ? { subnets: { ...(given.subnets.allow ? { allow: [...given.subnets.allow] } : {}), ...(given.subnets.deny ? { deny: [...given.subnets.deny] } : {}) } } : {};
+  return { allow: { ...forced, ...rules } as never, ...subnets } as SandboxNetworkPolicy;
+}
+
+/** Every header value a policy sets (its transforms' and its responses'): what an error or a log line must never carry. */
+export function policySecrets(policy: SandboxNetworkPolicy): string[] {
+  if (typeof policy !== 'object' || policy === null || Array.isArray(policy.allow) || !policy.allow) return [];
+  const out = new Set<string>();
+  const add = (headers: unknown) => {
+    if (typeof headers !== 'object' || headers === null) return;
+    for (const v of Object.values(headers)) if (typeof v === 'string' && v.length > 0) out.add(v);
+  };
+  for (const rules of Object.values(policy.allow)) {
+    for (const rule of rules ?? []) {
+      for (const t of (rule as { transform?: readonly { headers?: unknown }[] }).transform ?? []) add(t?.headers);
+      add((rule as { response?: { headers?: unknown } }).response?.headers);
+    }
+  }
+  // The longest first, so a value that contains another is hidden whole.
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * An error of an API call that carried a policy, without the policy's header
+ * values: its message with each one replaced, and only what the lifecycle
+ * reads of it (its class for `ApiConflict`, the status, the API's error code,
+ * a network code), never the SDK's response body. Unchanged when the policy
+ * sets no header.
+ */
+export function redactedError(err: unknown, secrets: readonly string[]): unknown {
+  if (!secrets.length) return err;
+  const hide = (text: string) => secrets.reduce((t, v) => t.split(v).join('[redacted]'), text);
+  if (err instanceof ApiConflict) return new ApiConflict(err.kind, hide(err.message));
+  const { status, code } = apiErrorOf(err);
+  const out = new Error(hide(String((err as { message?: unknown })?.message ?? err)));
+  const name = (err as { name?: unknown })?.name;
+  if (typeof name === 'string') out.name = hide(name);
+  let netCode: string | undefined;
+  for (let e: unknown = err, i = 0; e && i < 4 && !netCode; e = (e as { cause?: unknown }).cause, i++) {
+    const c = (e as { code?: unknown }).code;
+    if (typeof c === 'string' && NETWORK_CODES.has(c)) netCode = c;
+  }
+  return Object.assign(out, status !== undefined ? { response: { status } } : {}, code !== undefined ? { json: { error: { code } } } : {}, netCode ? { code: netCode } : {});
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +382,15 @@ interface Attach {
   attached: boolean;
   /** Serializes acquires of this attach. */
   busy?: Promise<unknown>;
+  /** This acquire's policy, resolved once (a callback is called once per acquire, and only when it is applied). */
+  policy?: Promise<ResolvedPolicy>;
+}
+
+/** The policy one acquire applies: as the platform takes it, its header values (never logged), and the harness's summary of it. */
+interface ResolvedPolicy {
+  readonly policy: SandboxNetworkPolicy;
+  readonly secrets: readonly string[];
+  readonly summary: MachineNetwork;
 }
 
 /** A VM's answer to an arm, checked: the reply and the token it was armed with. */
@@ -495,6 +580,8 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     }
     const fence = a.fence;
     const fenced = fencedToken(fence);
+    // Each attach resolves the policy afresh (a callback's is read again), when it applies one.
+    a.policy = undefined;
     let record = clean({ ...((await request.record?.read()) ?? {}) });
     const deadline = request.deadline ?? Date.now() + MAX_INVOCATION_MS;
     let next: MachineRecord = record;
@@ -576,7 +663,7 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
         continue;
       }
       if (fenced) {
-        const kept = await keepAlive(vm, fresh, next, deadline, fence.count);
+        const kept = await keepAlive(a, vm, fresh, next, deadline, fence.count);
         next = kept.record;
         await save();
         if (kept.error !== undefined) {
@@ -594,6 +681,9 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
       const root = layout?.workspace ?? WORKSPACE;
       const notes = [...a.notes];
       const notesKey = a.notesKey;
+      // What this attach applied (an attach that applied none, unfenced, says nothing: its machine can't spawn).
+      const applied = a.policy as Promise<ResolvedPolicy> | undefined;
+      const network = applied ? (await applied).summary : undefined;
       a.build = (token) =>
         brandMachine(
           sessionMachine({
@@ -609,6 +699,7 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
             modelKey: a.modelKey,
             notes,
             ...(notesKey !== undefined ? { notesKey } : {}),
+            ...(network !== undefined ? { network } : {}),
           })
         );
       a.machine = a.build(fence);
@@ -763,8 +854,32 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     }
   }
 
+  /**
+   * The policy this acquire applies, resolved once: the descriptor's, or what
+   * its callback returns for the session (called at most once per acquire,
+   * and only when a policy is applied). A callback that throws fails the
+   * attach, before anything is applied.
+   */
+  function policyFor(a: Attach): Promise<ResolvedPolicy> {
+    a.policy ??= (async () => {
+      const given = spec.network;
+      let value: SandboxNetworkValue;
+      if (typeof given === 'function') {
+        try {
+          value = await given({ sessionId: a.sessionId });
+        } catch (err) {
+          throw new Error('harness-sandbox: the sandbox({ network }) callback failed for this session; no policy was applied', { cause: err });
+        }
+      } else value = given;
+      const policy = networkPolicy(value);
+      return { policy, secrets: policySecrets(policy), summary: networkSummary(value) ?? 'deny-all' };
+    })();
+    return a.policy;
+  }
+
   async function create(a: Attach, deadline: number, budgetLeftMs: number, refreshBase: boolean): Promise<VmHandle> {
     if (budgetLeftMs < 1_000) throw new SandboxBudgetExceeded(spec.budget.vmSeconds);
+    const network = await policyFor(a);
     const region = a.drive!.region;
     const source: BootSource | undefined =
       typeof spec.image === 'string' ? { image: spec.image } : spec.image ? { snapshot: spec.image.snapshot } : await options.base?.(region, refreshBase ? { refresh: true } : undefined);
@@ -773,7 +888,8 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     const wanted = Math.max(deadline - Date.now(), 0) + spec.idleMs;
     const timeout = Math.min(wanted, cap.ms, budgetLeftMs);
     const make = (t: number) =>
-      api.createSandbox({
+      api
+        .createSandbox({
         name: a.name!,
         region,
         source,
@@ -782,10 +898,13 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
         ports: [RELAY_PORT],
         vcpus: spec.vcpus,
         timeout: t,
-        network: networkPolicy(spec.network),
+        network: network.policy,
         fenceMark: a.fence!.count,
         ...(options.tags ? { tags: options.tags } : {}),
-      });
+      })
+        .catch((err: unknown) => {
+          throw redactedError(err, network.secrets);
+        });
     try {
       return await make(timeout);
     } catch (err) {
@@ -855,14 +974,21 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
    * time granted, and the policy's failure, if any, for the caller to throw
    * once the grant is saved.
    */
-  async function keepAlive(vm: VmHandle, fresh: boolean, record: MachineRecord, deadline: number, count: number): Promise<{ record: MachineRecord; error?: unknown }> {
+  async function keepAlive(a: Attach, vm: VmHandle, fresh: boolean, record: MachineRecord, deadline: number, count: number): Promise<{ record: MachineRecord; error?: unknown }> {
     const now = Date.now();
     const age = now - vm.startedAt;
     const leftBudgetMs = budgetLeftMs(record);
     const left = vm.startedAt + vm.timeout - now;
     const want = Math.min(Math.max(deadline - now, 0) + idle(), cap.ms - age, Math.max(left, 0) + Math.max(leftBudgetMs, 0));
     let granted = 0;
-    const policy = fresh ? Promise.resolve() : vm.setNetwork(networkPolicy(spec.network), count);
+    // The descriptor's policy is the VM's, on every attach: whatever set another since (an earlier attach's callback, an out-of-band update) is replaced.
+    const policy = fresh
+      ? Promise.resolve()
+      : policyFor(a).then((network) =>
+          vm.setNetwork(network.policy, count).catch((err: unknown) => {
+            throw redactedError(err, network.secrets);
+          })
+        );
     const extend =
       want > left + 1_000
         ? vm.extendTimeout(want - left).then(

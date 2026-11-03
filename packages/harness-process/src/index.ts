@@ -54,6 +54,8 @@ export { isModelRequest, modelCrashArmed, ModelSteps, settleAbandonedModelSteps,
 export type { ModelStepOutput, ModelStepsOptions } from './model.ts';
 export type { BodyCheck, BodyPolicy, GatewayCap, GatewayHandlerOptions, GatewayLedger, GatewayProxy, GatewayProxyOptions, GatewayRoute, ProviderTool, TrackedRequest, TrackEnd } from './gateway.ts';
 export { FileTail } from './tail.ts';
+export { gatewayNetwork, networkSummary } from './network.ts';
+export type { GatewayNetwork, MachineNetwork, MachineNetworkOption, MachineNetworkSession } from './network.ts';
 export { journalLedger, SPEND_STREAM } from './ledger.ts';
 export type { JournalLedger, SpendRecord } from './ledger.ts';
 // The minter is `harness-world-process/machine-brand`, for the sandbox tier's session factory only.

@@ -232,6 +232,20 @@ describe('gatewayHandler: the body', () => {
     expect(gw.seen).toHaveLength(1);
   });
 
+  it("reads a network given as a function at each request (a per-session policy, known once the attach resolved it)", async () => {
+    const gw = await gateway();
+    let now: 'allow-all' | 'deny-all' | 'custom' = 'deny-all';
+    const { h } = handler(gw.url, { providerTools: ['web_search'], network: () => now });
+    const search = () => req('/v1/messages', messages({ tools: [{ type: 'web_search_20250305', name: 'web_search' }] }));
+    await refused(h(search(), signal()), 'forbidden');
+    now = 'custom';
+    await drain((await h(search(), signal())).body);
+    await refused(h(req('/v1/messages', messages({ messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'url', url: 'https://x.example/i.png' } }] }] })), signal()), 'forbidden');
+    now = 'allow-all';
+    await drain((await h(req('/v1/messages', messages({ messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'url', url: 'https://x.example/i.png' } }] }] })), signal())).body);
+    expect(gw.seen).toHaveLength(2);
+  });
+
   it('allows only { model, smallModel }, and clamps max_tokens', async () => {
     const gw = await gateway();
     const { h } = handler(gw.url, { maxOutputTokens: 2048 });

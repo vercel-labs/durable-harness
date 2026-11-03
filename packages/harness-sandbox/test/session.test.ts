@@ -9,7 +9,8 @@ import { Unavailable, Yield } from 'harness-world';
 import { isBrandedMachine, type AcquireMachineRequest, type FenceToken, type MachineRecord, type SessionMachine } from 'harness-world-process';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { sessionName } from '../src/names.ts';
-import { acknowledgeNotes, createCapOf, driveQuotaRefusal, extendPastCap, FILES_LOST_NOTE, HOBBY_CAP_MS, networkPolicy, PLAN_CAP_MAX_MS, parseArmReply, SandboxBudgetExceeded, SandboxLost, type SandboxSessionOptions, sandboxSession } from '../src/session.ts';
+import { ApiConflict } from '../src/api.ts';
+import { acknowledgeNotes, createCapOf, driveQuotaRefusal, extendPastCap, FILES_LOST_NOTE, HOBBY_CAP_MS, networkPolicy, PLAN_CAP_MAX_MS, parseArmReply, policySecrets, redactedError, SandboxBudgetExceeded, SandboxLost, type SandboxNetworkValue, type SandboxSessionOptions, sandboxSession } from '../src/session.ts';
 import { FakeSandboxApi } from './fake-api.ts';
 
 beforeAll(() => {
@@ -698,6 +699,132 @@ describe('the session factory: what it refuses', () => {
     } finally {
       process.env.DH_TEST_LOCAL_SANDBOX = saved;
     }
+  });
+});
+
+describe('the session factory: the network policy', () => {
+  const SECRET = 'Bearer sk-live-0123456789abcdef';
+  const brokered = (token = SECRET): SandboxNetworkValue => ({
+    allow: {
+      'api.github.com': [{ match: { method: ['GET'] }, transform: [{ headers: { authorization: token } }] }],
+      'registry.npmjs.org': [],
+    },
+    subnets: { deny: ['10.0.0.0/8'] },
+  });
+  const collect = () => {
+    const lines: string[] = [];
+    return { lines, log: (message: string, fields?: Record<string, unknown>) => void lines.push(`${message} ${JSON.stringify(fields ?? {})}`) };
+  };
+
+  it('passes a full policy through on create and re-applies it on every attach to the running VM', async () => {
+    const api = fakeApi();
+    const acquire = factory(api, { spec: { network: brokered() } });
+    const m1 = await track(acquire(invocation({ count: 1, fenced: true }).request));
+    expect(api.vms.get(NAME)!.create.network).toEqual(brokered());
+    expect(m1.network).toEqual({ allow: ['api.github.com', 'registry.npmjs.org'] });
+    await m1.close();
+    // Something else changed the VM's policy between turns (an out-of-band update): the next attach puts the descriptor's back.
+    api.vms.get(NAME)!.network = 'allow-all';
+    api.calls.length = 0;
+    await track(acquire(invocation({ count: 2, fenced: true }).request));
+    expect(api.calls).toContain(`setNetwork:${NAME}`);
+    expect(api.vms.get(NAME)!.network).toEqual(brokered());
+  });
+
+  it("calls a callback once per attach with the session, and applies its result at create and at each attach", async () => {
+    const api = fakeApi();
+    const seen: string[] = [];
+    let n = 0;
+    const acquire = factory(api, {
+      spec: {
+        network: async (session) => {
+          seen.push(session.sessionId);
+          n++;
+          return n === 1 ? brokered(`Bearer t${n}`) : { allow: ['example.com'] };
+        },
+      },
+    });
+    const first = invocation({ count: 1, fenced: true });
+    const m1 = await track(acquire(first.request));
+    expect(api.vms.get(NAME)!.create.network).toEqual(brokered('Bearer t1'));
+    // The same link, the same invocation: no attach, no call.
+    expect(await acquire(first.request)).toBe(m1);
+    expect(seen).toEqual([SESSION]);
+    await m1.close();
+    const m2 = await track(acquire(invocation({ count: 2, fenced: true }).request));
+    expect(seen).toEqual([SESSION, SESSION]);
+    expect(api.vms.get(NAME)!.network).toEqual({ allow: { 'example.com': [] } });
+    expect(m2.network).toEqual({ allow: ['example.com'] });
+  });
+
+  it('a callback that throws fails the attach with nothing applied; one that is not fenced is not called', async () => {
+    const api = fakeApi();
+    let calls = 0;
+    let fail = false;
+    const acquire = factory(api, {
+      spec: {
+        network: () => {
+          calls++;
+          if (fail) throw new Error('token service down');
+          return 'deny-all';
+        },
+      },
+    });
+    await (await track(acquire(invocation({ count: 1, fenced: true }).request))).close();
+    fail = true;
+    api.calls.length = 0;
+    const e = (await rejection(acquire(invocation({ count: 2, fenced: true }).request))) as Error;
+    expect(e.message).toMatch(/sandbox\(\{ network \}\) callback failed/);
+    expect((e.cause as Error).message).toBe('token service down');
+    expect(api.calls.some((c) => c.startsWith('setNetwork:'))).toBe(false);
+    const before = calls;
+    // A delivery whose token is not fenced re-applies nothing, so it doesn't ask.
+    await rejection(acquire(invocation({ count: 2, fenced: false }).request));
+    expect(calls).toBe(before);
+  });
+
+  it("never puts a header value in a log line or an error: a refused update's and a refused create's are redacted", async () => {
+    const api = fakeApi();
+    const l = collect();
+    const acquire = factory(api, { spec: { network: () => brokered(), image: undefined }, base: async () => ({ snapshot: 'snap_base' }), log: l.log });
+    await (await track(acquire(invocation({ count: 1, fenced: true }).request))).close();
+    api.failNetwork = { error: () => Object.assign(new Error(`Status code 400 is not ok: header authorization=${SECRET} is invalid`), { response: { status: 400 }, json: { error: { code: 'bad_request', detail: SECRET } }, text: SECRET }) };
+    const e = await rejection(acquire(invocation({ count: 2, fenced: true }).request));
+    expect((e as Error).message).toMatch(/header authorization=\[redacted\] is invalid/);
+    expect(JSON.stringify(e, Object.getOwnPropertyNames(e))).not.toContain('sk-live');
+    expect(e as object).toMatchObject({ response: { status: 400 }, json: { error: { code: 'bad_request' } } });
+    // A 5xx is still a retry later.
+    api.failNetwork = { error: () => Object.assign(new Error(`upstream echoed ${SECRET}`), { response: { status: 503 } }) };
+    expect(((await rejection(acquire(invocation({ count: 3, fenced: true }).request))) as Yield).reason).toBe('contended');
+    api.failNetwork = undefined;
+    // A create refused (the base gone, which the factory logs) names the value: neither the log nor the error carries it.
+    await (await api.getSandbox(NAME))!.delete();
+    api.beforeCreateSandbox = () => {
+      throw Object.assign(new Error(`Status code 404 is not ok: snapshot gone (policy ${SECRET})`), { response: { status: 404 } });
+    };
+    const c = await rejection(acquire(invocation({ count: 4, fenced: true }).request));
+    expect(String((c as Error).message)).toContain('[redacted]');
+    expect(String((c as Error).message)).not.toContain('sk-live');
+    expect(l.lines.some((x) => x.startsWith('the base snapshot is gone') && x.includes('[redacted]'))).toBe(true);
+    expect(l.lines.join('\n')).not.toContain('sk-live');
+  });
+
+  it('maps a full policy: rules and subnets as given, the forced 403s only with * and only for hosts it does not name', () => {
+    const env = { VERCEL_URL: 'app.example.com' };
+    expect(networkPolicy(brokered(), env)).toEqual(brokered());
+    const open = networkPolicy({ allow: { '*': [], 'ai-gateway.vercel.sh': [{ transform: [{ headers: { authorization: SECRET } }] }] } }, env) as { allow: Record<string, unknown[]> };
+    expect(open.allow['ai-gateway.vercel.sh']).toEqual([{ transform: [{ headers: { authorization: SECRET } }] }]);
+    expect(open.allow['api.vercel.com']).toEqual([{ response: { statusCode: 403 } }]);
+    expect(open.allow['app.example.com']).toEqual([{ response: { statusCode: 403 } }]);
+    expect(networkPolicy({ allow: ['*', 'github.com'] }, env)).toMatchObject({ allow: { '*': [], 'github.com': [], 'api.vercel.com': [{ response: { statusCode: 403 } }] } });
+    expect(networkPolicy({ subnets: { allow: ['10.0.0.0/8'] } }, env)).toEqual({ allow: {}, subnets: { allow: ['10.0.0.0/8'] } });
+    expect(policySecrets(networkPolicy(brokered()))).toEqual([SECRET]);
+    expect(policySecrets(networkPolicy('allow-all'))).toEqual([]);
+    const conflict = redactedError(new ApiConflict('name', `taken ${SECRET}`), [SECRET]);
+    expect(conflict).toBeInstanceOf(ApiConflict);
+    expect((conflict as Error).message).toBe('taken [redacted]');
+    const original = new Error('no secret here');
+    expect(redactedError(original, [])).toBe(original);
   });
 });
 

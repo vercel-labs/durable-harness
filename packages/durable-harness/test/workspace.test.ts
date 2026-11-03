@@ -89,6 +89,89 @@ describe('sandbox()', () => {
     expect(() => sandbox({ credentials: { token: '', teamId: 't', projectId: 'p' } })).toThrow(/non-empty token/);
   });
 
+  describe('network', () => {
+    const SECRET = 'Bearer sk-live-0123456789abcdef';
+    const policy = {
+      allow: {
+        'api.github.com': [{ match: { method: ['GET', 'POST'], path: { startsWith: '/repos/' } }, transform: [{ headers: { authorization: SECRET } }] }],
+        'proxy.example.com': [{ forwardURL: 'https://broker.example.com/forward' }],
+        'docs.example.com': [{ match: { path: { startsWith: '/private/' } }, response: { statusCode: 403, body: 'no', contentType: 'text/plain' } }],
+        '*': [],
+      },
+      subnets: { allow: ['10.0.0.0/8'], deny: ['10.1.0.0/16'] },
+    };
+    const message = (fn: () => unknown) => {
+      try {
+        fn();
+      } catch (error) {
+        return String(error);
+      }
+      throw new Error('did not throw');
+    };
+
+    it('keeps the shorthands as they were', () => {
+      expect(sandbox().network).toBe('allow-all');
+      expect(sandbox({ network: 'deny-all' }).network).toBe('deny-all');
+      expect(sandbox({ network: { allow: ['github.com', '*.npmjs.org'] } }).network).toEqual({ allow: ['github.com', '*.npmjs.org'] });
+    });
+
+    it('takes a full NetworkPolicy, copied and frozen', () => {
+      const given = structuredClone(policy);
+      const ws = sandbox({ network: given });
+      expect(ws.network).toEqual(policy);
+      given.allow['api.github.com'][0]!.transform![0]!.headers.authorization = 'changed';
+      expect(ws.network).toEqual(policy);
+      expect(Object.isFrozen((ws.network as typeof policy).allow['api.github.com'][0]!.transform![0]!.headers)).toBe(true);
+      expect(sandbox({ network: { subnets: { allow: ['192.168.0.0/16'] } } }).network).toEqual({ subnets: { allow: ['192.168.0.0/16'] } });
+    });
+
+    it('refuses bad shapes, naming where, never a header value', () => {
+      const bad: [unknown, RegExp][] = [
+        [{}, /needs allow or subnets/],
+        [{ allow: ['github.com'], deny: ['x.com'] }, /no key "deny"/],
+        [{ allow: { 'not a domain': [] } }, /network\.allow must list domains/],
+        [{ allow: { 'github.com': {} } }, /must be a list of rules/],
+        [{ allow: { 'github.com': [{ match: { method: ['GET'] } }] } }, /exactly one of transform, forwardURL or response/],
+        [{ allow: { 'github.com': [{ transform: [{ headers: { authorization: SECRET } }], response: { statusCode: 403 } }] } }, /exactly one/],
+        [{ allow: { 'github.com': [{ transform: [{ headers: { authorization: 42 } }] }] } }, /\["authorization"\] must be a string on one line/],
+        [{ allow: { 'github.com': [{ transform: [{ headers: { authorization: `${SECRET}\r\nx-injected: 1` } }] }] } }, /must be a string on one line/],
+        [{ allow: { 'github.com': [{ transform: [{ headers: { 'bad name': SECRET } }] }] } }, /not an HTTP header name/],
+        [{ allow: { 'github.com': [{ transform: [{ cookies: SECRET }] }] } }, /must be \{ headers/],
+        [{ allow: { 'github.com': [{ forwardURL: `http://broker.example.com/?key=${SECRET}` }] } }, /https URL with no query string/],
+        [{ allow: { 'github.com': [{ response: { statusCode: 99 } }] } }, /statusCode must be a whole number from 200 to 599/],
+        [{ allow: { 'github.com': [{ response: { statusCode: 403, body: SECRET } }] } }, /needs contentType with a body/],
+        [{ allow: { 'github.com': [{ response: { statusCode: 403, headers: { 'x-key': 7 } }, match: {} }] } }, /must be a string on one line/],
+        [{ allow: { 'github.com': [{ match: { method: ['get'] }, response: { statusCode: 403 } }] } }, /HTTP methods/],
+        [{ subnets: { allow: '10.0.0.0/8' } }, /network\.subnets\.allow must be a list of CIDRs/],
+        ['allow-some', /must be 'allow-all', 'deny-all'/],
+      ];
+      for (const [network, rule] of bad) {
+        const text = message(() => sandbox({ network: network as never }));
+        expect(text).toMatch(rule);
+        expect(text).not.toContain('sk-live');
+      }
+      expect(() => sandbox({ networkPolicy: 'deny-all' } as never)).toThrow(/use network: .*per-session callback/);
+    });
+
+    it('takes a per-session callback, and checks what it returns when it is called', async () => {
+      const seen: unknown[] = [];
+      const ws = sandbox({
+        network: async (session) => {
+          seen.push(session);
+          return session.sessionId === 'wrun_bad' ? ({ allow: { 'github.com': [{ transform: [{ headers: { authorization: 7 } }] }] } } as never) : policy;
+        },
+      });
+      expect(typeof ws.network).toBe('function');
+      const resolve = ws.network as (session: { sessionId: string }) => Promise<unknown>;
+      expect(await resolve({ sessionId: 'wrun_1' })).toEqual(policy);
+      expect(seen).toEqual([{ sessionId: 'wrun_1' }]);
+      await expect(resolve({ sessionId: 'wrun_bad' })).rejects.toThrow(/the sandbox\(\{ network \}\) callback's policy: network\.allow\["github\.com"\]\[0\]\.transform\[0\]\.headers\["authorization"\] must be a string/);
+      // A derived descriptor keeps the callback, checked once.
+      const derived = sandbox(ws, { vcpus: 4 });
+      expect(derived.network).toBe(ws.network);
+    });
+  });
+
   it('is not fooled by look-alikes', () => {
     expect(isWorkspace({ kind: 'sandbox' })).toBe(false);
     expect(isWorkspace(null)).toBe(false);

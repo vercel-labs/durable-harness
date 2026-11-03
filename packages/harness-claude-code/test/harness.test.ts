@@ -6,10 +6,10 @@ import { type DriveContext, type DurableSessions, durableSessions, type HostTool
 import { filesFromState, readLedger, unsafeTools, workspaceTools } from 'harness-world-hands';
 import { existsSync, readFileSync } from 'node:fs';
 import { groupAlive, journalRecords, type SessionMachine, transcriptOf } from 'harness-world-process';
-import { FILES_LOST_NOTE, SANDBOX_DOC, sessionName } from 'harness-world-sandbox';
+import { FILES_LOST_NOTE, SANDBOX_DOC, type SandboxNetworkOption, sessionName } from 'harness-world-sandbox';
 import type { FakeSandboxApi } from 'harness-world-sandbox/testing/fake-api';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, claudeCodeHarness, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
+import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, claudeCodeHarness, claudeSandboxSettings, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
 import { uuidFrom } from '../src/ids.ts';
 import { CLAUDE_STREAM, JournalSessionStore, type TranscriptLine, toolUseIds } from '../src/store.ts';
 import { type FakeSdk, fakeSdk } from './fake-sdk.ts';
@@ -81,12 +81,14 @@ async function session(
     tools?: HostTool[];
     /** The platform (default a fresh one). */
     api?: FakeSandboxApi;
+    /** `sandbox({ network })` (default `allow-all`). */
+    network?: SandboxNetworkOption;
   } = {}
 ) {
   const world = createWorld({ dataDir, recoverActiveRuns: opts.recover ?? false });
   worlds.push(world);
   const api = opts.api ?? platform();
-  const { sandbox } = standIn({ api });
+  const { sandbox } = standIn({ api, ...(opts.network ? { network: opts.network } : {}) });
   const sessions = durableSessions({
     world,
     harness: claudeCodeHarness({
@@ -358,6 +360,44 @@ describe('the refusal by provenance (docs/workspaces.md §6 rule 1)', () => {
     expect(failed.code).toBe('sandbox_required');
     expect(spawned).toEqual([]);
     expect(sdk.queries).toHaveLength(0);
+  });
+});
+
+describe('claudeCodeHarness: the network', () => {
+  const machine = { root: '/workspace', dirs: { home: '/h', config: '/c/config', 'codex-home': '/x', tmp: '/t', cache: '/k' } } as Pick<SessionMachine, 'root' | 'dirs'>;
+  const domains = (network: Parameters<typeof claudeSandboxSettings>[1]) => (claudeSandboxSettings(machine, network).network as { allowedDomains: string[]; strictAllowlist?: boolean });
+
+  it("derives the CLI's own sandbox from the policy's summary: the shorthands as before, a full policy by its domains, an unknown one closed", () => {
+    expect(domains('allow-all')).toMatchObject({ allowedDomains: ['*'] });
+    expect(domains('allow-all').strictAllowlist).toBeUndefined();
+    expect(domains('deny-all')).toMatchObject({ allowedDomains: [], strictAllowlist: true });
+    expect(domains({ allow: ['github.com'] })).toMatchObject({ allowedDomains: ['github.com'], strictAllowlist: true });
+    // A policy that allows every other domain: the CLI's proxy is open, and the VM's policy (its rules, the forced 403s) applies past it.
+    expect(domains({ allow: ['api.github.com', '*'] })).toMatchObject({ allowedDomains: ['*'] });
+    expect(domains(undefined)).toMatchObject({ allowedDomains: [], strictAllowlist: true });
+  });
+
+  it('a per-session callback is called with the session at each attach, and the VM gets its policy, header transform included', async () => {
+    const sdk = fakeSdk();
+    const seen: string[] = [];
+    const policy = { allow: { 'api.github.com': [{ transform: [{ headers: { authorization: 'Bearer brokered' } }] }], 'registry.npmjs.org': [] } };
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk, {
+      network: async ({ sessionId }) => {
+        seen.push(sessionId);
+        return policy;
+      },
+    });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    await waitTurns(a.sessions, sessionId, 1);
+    expect(seen[0]).toBe(sessionId);
+    expect(a.api.vms.get(sessionName('prj_stand_in', sessionId))!.create.network).toEqual(policy);
+    await a.drained();
+    await a.sessions.send(sessionId, 'again');
+    await waitTurns(a.sessions, sessionId, 2);
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((s) => s === sessionId)).toBe(true);
+    expect(a.api.calls).toContain(`setNetwork:${sessionName('prj_stand_in', sessionId)}`);
   });
 });
 

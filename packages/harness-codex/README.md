@@ -149,7 +149,11 @@ and the drive answers only once the call's intent is in the log.
 
 `durable-harness/codex` resolves `workspace: sandbox()` (the default) into
 the sandbox tier's session factory, and passes the descriptor's `env`,
-`network`, `budget` and `commandTimeoutMs` on as `machine`:
+`network`, `budget` and `commandTimeoutMs` on as `machine`. The session
+factory applies `network` (a shorthand, a full `NetworkPolicy` or a
+per-session callback) to the VM on every attach; the harness reads only its
+mode, from the attached machine, to decide what the gateway lets the
+provider fetch:
 
 ```ts
 // lib/agent.ts

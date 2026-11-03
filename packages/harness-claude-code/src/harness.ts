@@ -11,10 +11,14 @@ import {
   gatewayCredential,
   type GatewayHandler,
   gatewayHandler,
+  gatewayNetwork,
   gatewayUrl,
   isBrandedMachine,
   journalLedger,
+  type MachineNetwork,
+  type MachineNetworkOption,
   ModelSteps,
+  networkSummary,
   NativeJournal,
   openTurn,
   placeSubmissions,
@@ -108,8 +112,14 @@ export type ClaudeAgentSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'
 type QueryOptions = NonNullable<Parameters<ClaudeAgentSdk['query']>[0]['options']>;
 type UserMessage = import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
 
-/** The VM's network, as `sandbox({ network })` says it (durable-harness's `SandboxNetwork`). */
-export type ClaudeSandboxNetwork = 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
+/**
+ * The VM's network, as `sandbox({ network })` says it (durable-harness's
+ * `SandboxNetwork`): a shorthand, a full policy, or a per-session callback.
+ * The session factory applies it; the harness reads only its summary
+ * (`networkSummary`: the mode and the domains it names), a callback's from
+ * the machine its attach handed back (`SessionMachine.network`).
+ */
+export type ClaudeSandboxNetwork = MachineNetworkOption;
 
 /**
  * The session's sandbox, as a kernel harness gets it from the sandbox tier
@@ -127,7 +137,7 @@ export interface ClaudeSandbox {
   acknowledge?(ctx: DriveContext, key?: string): Promise<void>;
   /** `sandbox({ env })`: non-secret variables for the CLI (checked there, and again at every spawn). */
   readonly env?: Readonly<Record<string, string>>;
-  /** `sandbox({ network })`: what the CLI's own sandbox lets commands reach, and whether provider-hosted tools may run. */
+  /** `sandbox({ network })`: what the CLI's own sandbox lets commands reach, and whether provider-hosted tools may run (see `ClaudeSandboxNetwork`). */
   readonly network: ClaudeSandboxNetwork;
   /** `sandbox({ budget })`'s dollar caps (`Infinity` turns one off). */
   readonly budget: { readonly turnUsd: number; readonly sessionUsd: number };
@@ -333,8 +343,14 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   throw new TypeError("harness-world-claude-code: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
 }
 
-/** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
-export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork): NonNullable<QueryOptions['sandbox']> {
+/**
+ * The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16).
+ * `network` is the VM's policy as `networkSummary` reduces it: `allow-all`, or
+ * a policy that allows every other domain (`*`), opens the CLI's proxy (the
+ * VM's policy, rules and all, still applies past it); a custom policy is its
+ * domains, strictly; `deny-all`, or a policy not known (undefined), none.
+ */
+export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: MachineNetwork | undefined): NonNullable<QueryOptions['sandbox']> {
   const { dirs } = machine;
   const open = [dirs.tmp, dirs.home, dirs.cache];
   return {
@@ -344,7 +360,11 @@ export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'di
     filesystem: { allowWrite: [machine.root, ...open], denyRead: [dirname(dirs.config)], allowRead: open },
     credentials: { envVars: [{ name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }] },
     network: {
-      ...(network === 'allow-all' ? { allowedDomains: ['*'] } : network === 'deny-all' ? { allowedDomains: [], strictAllowlist: true } : { allowedDomains: [...network.allow], strictAllowlist: true }),
+      ...(network === 'allow-all' || (typeof network === 'object' && network.allow.includes('*'))
+        ? { allowedDomains: ['*'] }
+        : typeof network === 'object'
+          ? { allowedDomains: [...network.allow], strictAllowlist: true }
+          : { allowedDomains: [], strictAllowlist: true }),
       // The model port is the CLI's alone: never through the sandbox's proxy (the loopback names and literals it takes;
       // a public name that resolves to loopback still gets past, and then meets the port's key).
       deniedDomains: [...LOOPBACK_NAMES],
@@ -411,6 +431,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       }
       const sandbox = options.sandbox;
       if (!sandbox) throw sandboxRequired();
+      // The descriptor's network as a summary; a per-session callback's is known once the attach resolved it (the machine's).
+      const staticNetwork = networkSummary(sandbox.network);
       const [{ query, createSdkMcpServer, tool }, { z }] = await Promise.all([loadSdk(), import('zod')]);
       const journal = new NativeJournal(ctx);
       const records = await journal.read();
@@ -432,7 +454,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         budget: sandbox.budget,
         ledger,
         providerTools,
-        network: sandbox.network === 'allow-all' || sandbox.network === 'deny-all' ? sandbox.network : 'custom',
+        // Read per request: the model calls come over the attached machine, which says what its attach applied.
+        network: () => gatewayNetwork(held?.network ?? staticNetwork),
         credential: () => inDrive(credential),
         target: options.gatewayUrl ?? gatewayUrl(),
         track: steps.request,
@@ -646,7 +669,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(allowed !== undefined ? { tools: allowed } : {}),
           disallowedTools: disallowed,
           ...(builtinsOn ? { hooks } : {}),
-          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
+          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, machine.network ?? staticNetwork) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
           allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
           permissionMode: 'dontAsk',

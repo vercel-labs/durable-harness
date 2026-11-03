@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./machine-brand": "./src/machine-brand.ts",
+    "./network": "./src/network.ts",
     "./records": "./src/records.ts",
     "./reference": "./reference/harness.ts",
     "./reference/fake-model": "./reference/fake-model.ts"

@@ -37,6 +37,8 @@
  * kernel's drive); "the Drive" is the Vercel Sandbox storage volume.
  */
 
+import type { NetworkPolicy } from '@vercel/sandbox';
+
 /** Marks the objects `virtual()` and `sandbox()` return (`isWorkspace`). Registered, so two copies of the package agree. */
 const BRAND: unique symbol = Symbol.for('durable-harness.workspace') as never;
 
@@ -148,21 +150,62 @@ export function virtual(first: VirtualOptions | VirtualWorkspace = {}, overrides
 // sandbox()
 
 /**
- * The VM's outbound network. The VM holds no credential for the AI Gateway,
- * the Vercel API or your app, so a call there from the VM fails either way;
- * where the policy allows it, the VM's network policy also answers 403 for
- * them. The VM's only way to a model is through the driver, which adds the
- * credential in your Function.
+ * A network policy for the VM: a shorthand, or `@vercel/sandbox`'s full
+ * `NetworkPolicy` (per-domain rules: header transforms, forwards to a proxy,
+ * answers from the proxy; and subnets).
  *
  * - `allow-all` (default): everything else is open (npm, git, curl work).
  * - `deny-all`: nothing, DNS included. Claude Code and Codex still work:
  *   their model calls go through the driver, not the VM's network.
- * - `{ allow }`: only these domains (`*.example.com` for subdomains).
+ * - `{ allow: [domains] }`: only these domains (`*.example.com` for
+ *   subdomains, `*` for every other domain).
+ * - `{ allow: { [domain]: rules }, subnets }`: the full policy, applied as
+ *   given. A `transform: [{ headers }]` rule sets headers on the VM's
+ *   requests to that domain outside the VM, so the VM can use a credential
+ *   it never holds (credential brokering).
+ */
+export type SandboxNetworkPolicy = 'allow-all' | 'deny-all' | { readonly allow: readonly string[] } | NetworkPolicy;
+
+/** The session a per-session network callback is called for. */
+export interface SandboxNetworkSession {
+  /** The session's id (its run id). */
+  readonly sessionId: string;
+}
+
+/**
+ * The VM's outbound network: a policy (`SandboxNetworkPolicy`), or a
+ * callback that returns one for the session.
+ *
+ * The harness owns the VM's policy: it applies it when the VM is created and
+ * applies it again every time a session attaches to a running VM (each turn,
+ * a follow-up, a resume), because the VM may be fresh, or an earlier attach
+ * may have set another. A policy set on the VM some other way (the
+ * Sandbox SDK's `sandbox.update({ networkPolicy })`) lasts only until the
+ * next attach replaces it: express it here instead. A callback is called on
+ * every attach, before the policy is applied, so it can read what changes
+ * per session or over time (a user's token for a header transform); it may
+ * be async, and a callback that throws fails the attach with nothing
+ * applied.
+ *
+ * Header values (a transform's, a response's) stay in your Function and on
+ * the platform: the harness never writes them to the session's log, its
+ * Agent Runs spans or its log lines, and takes them out of the Sandbox API's
+ * errors. The descriptor holds a static policy as given, so prefer the
+ * callback for a credential, and don't log the descriptor.
+ *
+ * The VM holds no credential for the AI Gateway, the Vercel API or your app,
+ * so a call there from the VM fails either way; under `allow-all`, or a
+ * policy that allows every other domain (`*`), the VM's network policy also
+ * answers 403 for them, unless the policy names that host itself. The VM's
+ * only way to a model is through the driver, which adds the credential in
+ * your Function.
  *
  * Provider-hosted tools (web search or fetch run by the model provider) don't
- * use the VM's network; they are off unless your app turns them on.
+ * use the VM's network; they are off unless your app turns them on, refused
+ * under `deny-all` whatever it says, and a provider-side fetch of a URL runs
+ * only under `allow-all` (a full policy counts as custom, even with `*`).
  */
-export type SandboxNetwork = 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
+export type SandboxNetwork = SandboxNetworkPolicy | ((session: SandboxNetworkSession) => SandboxNetworkPolicy | Promise<SandboxNetworkPolicy>);
 
 /**
  * Vercel credentials for a driver that runs outside Vercel (a self-hosted
@@ -318,7 +361,7 @@ const SANDBOX_LATER: Record<string, string> = {
   persistent: 'session VMs are never persistent: the Drive holds the files and the log the session, so every boot is a fresh VM',
   drive: 'every sandbox has a Drive at /workspace',
   failoverRegions: 'failover regions are not supported with a Drive mounted',
-  networkPolicy: 'use network (allow-all, deny-all or { allow })',
+  networkPolicy: "use network: 'allow-all', 'deny-all', { allow }, a full NetworkPolicy, or a per-session callback",
   timeout: 'use idleMs and commandTimeoutMs: the driver keeps the VM up while it runs',
 };
 
@@ -404,16 +447,141 @@ function sandboxImage(image: unknown): string | { readonly snapshot: string } | 
   throw invalid('sandbox', 'image', 'must be a VCR image name or { snapshot: id }', image);
 }
 
+/** The callbacks `sandbox()` already wrapped (a derived descriptor's), so they're checked once. */
+const CHECKED_NETWORK = new WeakSet<object>();
+
 function sandboxNetwork(network: unknown): SandboxNetwork {
-  if (network === 'allow-all' || network === 'deny-all') return network;
-  if (typeof network === 'object' && network !== null && Object.keys(network).length === 1 && Array.isArray((network as { allow?: unknown }).allow)) {
-    const allow = (network as { allow: unknown[] }).allow;
-    for (const domain of allow) {
-      if (typeof domain !== 'string' || !DOMAIN.test(domain)) throw invalid('sandbox', 'network.allow', 'must list domains such as example.com or *.example.com', domain);
-    }
-    return Object.freeze({ allow: Object.freeze([...(allow as string[])]) });
+  if (typeof network === 'function') {
+    if (CHECKED_NETWORK.has(network)) return network as SandboxNetwork;
+    const given = network as (session: SandboxNetworkSession) => unknown;
+    // The callback's policy is checked as a static one is, at each attach, before the factory applies it.
+    const checked = async (session: SandboxNetworkSession): Promise<SandboxNetworkPolicy> => networkPolicy(await given(Object.freeze({ sessionId: session.sessionId })), "the sandbox({ network }) callback's policy");
+    CHECKED_NETWORK.add(checked);
+    return checked;
   }
-  throw invalid('sandbox', 'network', "must be 'allow-all', 'deny-all' or { allow: [domains] }", network);
+  return networkPolicy(network, 'sandbox({ network })');
+}
+
+const NETWORK_KEYS = ['allow', 'subnets'] as const;
+const RULE_KEYS = ['match', 'transform', 'forwardURL', 'response'] as const;
+const MATCH_KEYS = ['path', 'method', 'queryString', 'headers'] as const;
+const RESPONSE_KEYS = ['statusCode', 'headers', 'body', 'contentType'] as const;
+/** An HTTP header name (RFC 9110 token). */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HTTP_METHOD = /^[A-Z]+$/;
+
+/**
+ * A policy, checked and copied (frozen, so a later change to the app's
+ * object changes nothing). A message names where the policy is wrong, and a
+ * domain or a header name, never a header value or a body: they may be
+ * credentials. What the platform checks besides (the matchers' values, the
+ * CIDRs) it refuses when the policy is applied.
+ */
+function networkPolicy(network: unknown, where: string): SandboxNetworkPolicy {
+  if (network === 'allow-all' || network === 'deny-all') return network;
+  const fail = (path: string, rule: string) => new TypeError(`durable-harness: ${where}: ${path === '' ? 'network' : `network.${path}`.replace('.[', '[')} ${rule}`);
+  if (!isPlainObject(network)) throw fail('', `must be 'allow-all', 'deny-all', { allow: [domains] } or a NetworkPolicy object (got ${describe(network)})`);
+  for (const key of Object.keys(network)) if (!(NETWORK_KEYS as readonly string[]).includes(key)) throw fail('', `has no key ${JSON.stringify(key)} (it takes allow and subnets)`);
+  if (network.allow === undefined && network.subnets === undefined) throw fail('', "needs allow or subnets (for no network, use 'deny-all')");
+  const out: { allow?: unknown; subnets?: unknown } = {};
+  const domain = (d: unknown) => {
+    if (typeof d !== 'string' || (d !== '*' && !DOMAIN.test(d))) throw fail('allow', `must list domains such as example.com, *.example.com or * (got ${describe(d)})`);
+    return d;
+  };
+  if (Array.isArray(network.allow)) out.allow = Object.freeze(network.allow.map(domain));
+  else if (isPlainObject(network.allow)) {
+    out.allow = Object.freeze(
+      Object.fromEntries(
+        Object.entries(network.allow).map(([d, rules]) => {
+          domain(d);
+          if (!Array.isArray(rules)) throw fail(`allow[${JSON.stringify(d)}]`, 'must be a list of rules ([] allows every request)');
+          return [d, Object.freeze(rules.map((rule, i) => networkRule(rule, `allow[${JSON.stringify(d)}][${i}]`, fail)))];
+        })
+      )
+    );
+  } else if (network.allow !== undefined) throw fail('allow', 'must be a list of domains or a record of domains to rules');
+  if (network.subnets !== undefined) {
+    if (!isPlainObject(network.subnets)) throw fail('subnets', 'must be { allow?: [cidrs], deny?: [cidrs] }');
+    const subnets: Record<string, readonly string[]> = {};
+    for (const [key, cidrs] of Object.entries(network.subnets)) {
+      if (key !== 'allow' && key !== 'deny') throw fail('subnets', `has no key ${JSON.stringify(key)} (it takes allow and deny)`);
+      if (!Array.isArray(cidrs) || !cidrs.every((c) => typeof c === 'string' && c.length > 0)) throw fail(`subnets.${key}`, 'must be a list of CIDRs such as 10.0.0.0/8');
+      subnets[key] = Object.freeze([...(cidrs as string[])]);
+    }
+    out.subnets = Object.freeze(subnets);
+  }
+  return Object.freeze(out) as SandboxNetworkPolicy;
+}
+
+function networkRule(rule: unknown, path: string, fail: (path: string, rule: string) => TypeError): object {
+  if (!isPlainObject(rule)) throw fail(path, 'must be a rule object');
+  for (const key of Object.keys(rule)) if (!(RULE_KEYS as readonly string[]).includes(key)) throw fail(path, `has no key ${JSON.stringify(key)} (a rule takes match and one of transform, forwardURL or response)`);
+  const actions = (['transform', 'forwardURL', 'response'] as const).filter((k) => rule[k] !== undefined);
+  if (actions.length !== 1) throw fail(path, 'must have exactly one of transform, forwardURL or response');
+  const out: Record<string, unknown> = {};
+  if (rule.match !== undefined) out.match = networkMatch(rule.match, `${path}.match`, fail);
+  if (rule.transform !== undefined) {
+    if (!Array.isArray(rule.transform) || rule.transform.length === 0) throw fail(`${path}.transform`, 'must be a non-empty list of { headers }');
+    out.transform = Object.freeze(
+      rule.transform.map((t, i) => {
+        if (!isPlainObject(t) || Object.keys(t).some((k) => k !== 'headers')) throw fail(`${path}.transform[${i}]`, 'must be { headers: { name: value } }');
+        return Object.freeze(t.headers === undefined ? {} : { headers: headerRecord(t.headers, `${path}.transform[${i}].headers`, fail) });
+      })
+    );
+  }
+  if (rule.forwardURL !== undefined) {
+    let url: URL | undefined;
+    try {
+      url = typeof rule.forwardURL === 'string' ? new URL(rule.forwardURL) : undefined;
+    } catch {}
+    // The URL itself is never in the message: it may carry a credential.
+    if (!url || url.protocol !== 'https:' || url.search || url.hash || rule.forwardURL.includes('?') || rule.forwardURL.includes('#')) throw fail(`${path}.forwardURL`, 'must be an https URL with no query string or fragment');
+    out.forwardURL = rule.forwardURL;
+  }
+  if (rule.response !== undefined) {
+    const r = rule.response;
+    if (!isPlainObject(r)) throw fail(`${path}.response`, 'must be { statusCode, headers?, body?, contentType? }');
+    for (const key of Object.keys(r)) if (!(RESPONSE_KEYS as readonly string[]).includes(key)) throw fail(`${path}.response`, `has no key ${JSON.stringify(key)} (it takes statusCode, headers, body and contentType)`);
+    if (typeof r.statusCode !== 'number' || !Number.isInteger(r.statusCode) || r.statusCode < 200 || r.statusCode > 599) throw fail(`${path}.response.statusCode`, 'must be a whole number from 200 to 599');
+    if (r.body !== undefined && typeof r.body !== 'string') throw fail(`${path}.response.body`, 'must be a string');
+    if (r.contentType !== undefined && typeof r.contentType !== 'string') throw fail(`${path}.response.contentType`, 'must be a string');
+    if (r.body !== undefined && r.contentType === undefined) throw fail(`${path}.response`, 'needs contentType with a body');
+    out.response = Object.freeze({ ...r, ...(r.headers !== undefined ? { headers: headerRecord(r.headers, `${path}.response.headers`, fail) } : {}) });
+  }
+  return Object.freeze(out);
+}
+
+function networkMatch(match: unknown, path: string, fail: (path: string, rule: string) => TypeError): object {
+  if (!isPlainObject(match)) throw fail(path, 'must be { path?, method?, queryString?, headers? }');
+  for (const key of Object.keys(match)) if (!(MATCH_KEYS as readonly string[]).includes(key)) throw fail(path, `has no key ${JSON.stringify(key)} (it takes path, method, queryString and headers)`);
+  if (match.path !== undefined && !isPlainObject(match.path)) throw fail(`${path}.path`, 'must be a matcher ({ exact }, { startsWith } or { regex })');
+  if (match.method !== undefined && (!Array.isArray(match.method) || !match.method.every((m) => typeof m === 'string' && HTTP_METHOD.test(m)))) throw fail(`${path}.method`, 'must be a list of HTTP methods such as GET');
+  for (const key of ['queryString', 'headers'] as const) {
+    if (match[key] !== undefined && (!Array.isArray(match[key]) || !match[key].every(isPlainObject))) throw fail(`${path}.${key}`, 'must be a list of { key?, value? } matchers');
+  }
+  return deepFrozen(match);
+}
+
+/** Header names checked; values must be strings on one line, and are never put in a message. */
+function headerRecord(headers: unknown, path: string, fail: (path: string, rule: string) => TypeError): Readonly<Record<string, string>> {
+  if (!isPlainObject(headers)) throw fail(path, 'must be a record of header names to values');
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME.test(name)) throw fail(path, `has a name that is not an HTTP header name (${describe(name)})`);
+    if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw fail(`${path}[${JSON.stringify(name)}]`, 'must be a string on one line');
+  }
+  return Object.freeze({ ...(headers as Record<string, string>) });
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function deepFrozen<T>(value: T): T {
+  if (Array.isArray(value)) return Object.freeze(value.map(deepFrozen)) as T;
+  if (typeof value === 'object' && value !== null) return Object.freeze(Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deepFrozen(v)]))) as T;
+  return value;
 }
 
 function checkSandboxEnvVars(env: unknown): Readonly<Record<string, string>> {

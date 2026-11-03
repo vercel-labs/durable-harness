@@ -22,6 +22,7 @@
  * fence is stale (but still reads `fenced`) never deletes the newer owner's
  * VM, and a VM it can't ask (lost) still says who armed it last.
  */
+import type { NetworkPolicy } from '@vercel/sandbox';
 import { resolveProjectId } from './names.ts';
 
 export { resolveProjectId };
@@ -87,8 +88,8 @@ export interface VmHandle {
   readonly layout?: VmLayout;
 }
 
-/** The network policy the factory applies (`@vercel/sandbox`'s `NetworkPolicy`, the subset it uses). */
-export type SandboxNetworkPolicy = 'allow-all' | 'deny-all' | { allow: Record<string, { response?: { statusCode: number } }[]> };
+/** The network policy the factory applies: `@vercel/sandbox`'s `NetworkPolicy`, rules (header transforms, forwards, responses) and subnets included. */
+export type SandboxNetworkPolicy = NetworkPolicy;
 
 /** What the VM boots from. */
 export type BootSource = { image: string } | { snapshot: string };
@@ -207,7 +208,7 @@ export function vercelSandboxApi(credentials?: ApiCredentials): SandboxApi & Cle
       async setNetwork(policy, mark) {
         const tags = sb.tags ?? {};
         const raise = mark !== undefined && mark > (fenceMarkOf(tags) ?? -1);
-        await sb.update({ networkPolicy: policy as never, ...(raise ? { tags: { ...tags, [FENCE_TAG]: String(mark) } } : {}) });
+        await sb.update({ networkPolicy: policy, ...(raise ? { tags: { ...tags, [FENCE_TAG]: String(mark) } } : {}) });
       },
       async stop() {
         await sb.stop();
@@ -284,7 +285,7 @@ export function vercelSandboxApi(credentials?: ApiCredentials): SandboxApi & Cle
           ports: o.ports,
           resources: { vcpus: o.vcpus },
           timeout: o.timeout,
-          networkPolicy: o.network as never,
+          networkPolicy: o.network,
           ...(Object.keys(tags).length ? { tags } : {}),
           ...source,
           ...creds,

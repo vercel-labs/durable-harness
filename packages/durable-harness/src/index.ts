@@ -32,6 +32,8 @@ export {
   type SandboxBudget,
   type SandboxCredentials,
   type SandboxNetwork,
+  type SandboxNetworkPolicy,
+  type SandboxNetworkSession,
   type SandboxOptions,
   type SandboxRecord,
   type SandboxWorkspace,
