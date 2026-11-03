@@ -46,6 +46,17 @@ against these pins (pnpm only warns on a peer mismatch): another version fails
 the turn as unavailable, with the installed and pinned versions and the install
 line, and the session's next message drives it again once the install is fixed.
 
+## Models through AI Gateway
+
+OpenCode reads the selected model's current Gateway metadata through the
+drive's authenticated loopback relay and supplies it as a model definition to
+the built-in `vercel` provider. It keeps using the same relay and placeholder
+credential for inference, with no separate models.dev fetch.
+
+If discovery is unavailable, OpenCode falls back to its bundled model
+definitions. A new ID can still be absent from that fallback; catalog presence
+alone does not establish a working tool/result round trip.
+
 ## How it works
 
 OpenCode v2 is event-sourced: every change to a session is a durable event

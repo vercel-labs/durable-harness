@@ -27,6 +27,10 @@ const envKey = process.env.AI_GATEWAY_API_KEY;
 
 beforeAll(async () => {
   gateway = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: [] }));
+      return;
+    }
     seen.push({ url: req.url ?? '', ...(req.headers.authorization ? { authorization: req.headers.authorization } : {}), model: req.headers['ai-language-model-id'] });
     res.writeHead(401, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'no model calls in this test', type: 'authentication_error' } }));
   });

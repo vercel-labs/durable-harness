@@ -14,6 +14,7 @@ import {
   workspaceTool,
 } from './environment.ts';
 import type { Channel, FromHost, HostInit, InstructionBlob, OpenCodeEvent, ToHost } from './protocol.ts';
+import { gatewayModelConfig } from './models.ts';
 
 /**
  * The OpenCode host: OpenCode v2's embedded server (no listener: its router
@@ -549,6 +550,13 @@ export async function runHost(init: HostInit, channel: Channel<ToHost, FromHost>
   // The session's built-ins (only OpenCode's seven, only with a workspace).
   const builtins = new Set(options.workspace ? init.builtins.filter((b): b is OpenCodeTool => (OPENCODE_TOOLS as readonly string[]).includes(b)) : []);
 
+  // Gateway can serve IDs newer than OpenCode's bundled models.dev snapshot.
+  // A catalog outage must not prevent using a model the snapshot already knows.
+  const models = await gatewayModelConfig(init).catch((error) => {
+    console.warn('[opencode] Gateway model discovery unavailable; using bundled metadata', error instanceof Error ? error.message : String(error));
+    return undefined;
+  });
+
   const config = {
     model: init.model,
     share: 'disabled',
@@ -556,7 +564,7 @@ export async function runHost(init: HostInit, channel: Channel<ToHost, FromHost>
     snapshots: false,
     // OpenCode's built-in AI Gateway provider, through the drive's proxy:
     // the host holds a placeholder, the proxy adds the credential.
-    providers: { vercel: { settings: { baseURL: init.gatewayBaseURL, apiKey: init.gatewayKey } } },
+    providers: { vercel: { settings: { baseURL: init.gatewayBaseURL, apiKey: init.gatewayKey }, ...(models ? { models } : {}) } },
   };
   // OpenCode's own logs: warnings and errors on stderr (everything with HARNESS_OPENCODE_DEBUG).
   const logs = Layer.merge(
@@ -580,6 +588,7 @@ export async function runHost(init: HostInit, channel: Channel<ToHost, FromHost>
         app: { name: 'harness-world' },
         database: { path: init.dbPath },
         events: { persist: true },
+        // Metadata above comes through the Gateway relay; don't fetch models.dev separately.
         models: { fetch: false },
         // No project config, no user config: only what the drive passes.
         config: { content: JSON.stringify(config), directory: init.configDir, project: false },

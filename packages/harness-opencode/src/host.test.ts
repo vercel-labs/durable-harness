@@ -29,7 +29,11 @@ let gatewayUrl: string;
 let gatewayHits = 0;
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'oc-host-'));
-  gateway = createServer((_req, res) => {
+  gateway = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: [] }));
+      return;
+    }
     gatewayHits++;
     res.writeHead(500).end('no model calls in this test');
   });
