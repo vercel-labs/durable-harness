@@ -36,9 +36,21 @@ every other harness here: `durableSessions({ world, harness })`, then
   on** next to them, each call in the log before it runs (see
   [Tools](#tools)), and `view_image` (a read). Image generation, web
   search, sub-agents and plugins stay off either way.
-  The `functions` namespace stays directly exposed even for newer code-mode
-  model families, preserving each tool's rollout call ID for the journal.
-  The nested code-mode host stays disabled.
+  Newer model families (gpt-5.6-sol, gpt-6-sol, gpt-6-astra and others)
+  are code-mode-only: Codex would offer their tools nested under code
+  mode's `exec`, whose calls never reach the rollout with their own
+  `call_id`. The harness keeps Codex's `functions` namespace direct
+  (`features.code_mode.direct_only_tool_namespaces`), so your tools are
+  offered as plain functions and each call keeps the rollout `call_id` its
+  effect is keyed by and its log barrier looks for. Codex still offers
+  these models some tools of its own that the harness turns off, and none
+  of them can run: code mode's `exec` (it fails: the nested code-mode host
+  is off) and its sub-agent `collaboration` tools (Codex refuses them:
+  "unsupported call"). With the built-ins off, `apply_patch` is not offered
+  (each turn has no environment); a call to it anyway is refused by Codex,
+  and a patch approval would be declined by the harness: nothing is
+  written. A call to a tool the harness neither runs nor journals is logged
+  (`log`) with its name and call id, never its arguments.
 - **Codex's thread is mirrored into the log.** Codex keeps a thread as an
   append-only JSONL file, the rollout. Every line it writes becomes a record
   of the session's native journal (group-committed record-only effects),

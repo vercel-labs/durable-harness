@@ -33,6 +33,7 @@ import { AppServer, type RpcNotification, type RpcServerRequest } from './app-se
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.ts';
 import {
   callIdOf,
+  callOf,
   endsTurn,
   isRolloutPath,
   isSessionMeta,
@@ -207,6 +208,9 @@ const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-acce
 
 /** Codex's command actions that only read: a command made of these alone is `safe` (the note says "safe to repeat"). */
 const READ_ACTIONS = new Set(['read', 'listFiles', 'search']);
+
+/** Codex 0.160's names for the built-ins `BUILTINS_ON` enables, as its rollout calls them. */
+const BUILTIN_TOOL_NAMES: readonly string[] = ['exec_command', 'write_stdin', 'apply_patch', 'view_image'];
 
 /** A Codex item's replay policy: a command whose every action reads is `safe`; any other command, and every patch, `never`. */
 export function codexItemReplay(item: { type?: string; commandActions?: { type?: string }[] }): ReplayPolicy {
@@ -570,6 +574,17 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       let turnEnds = 0;
       let stream = '';
       let threadId = '';
+      /**
+       * The tools the harness accounts for: the app's (dynamic tools, each an
+       * effect), `request_user_input` (Codex answers it "unavailable in
+       * Default mode"), and with the built-ins on the ones `BUILTINS_ON`
+       * enables (a command or a patch is an effect; `write_stdin` and
+       * `view_image` go with them). Anything else in the rollout is a tool
+       * Codex offered on its own, which the harness never sees run: code
+       * mode's `exec`, its sub-agent tools, a stray `apply_patch` with the
+       * built-ins off (refused by Codex, or declined below).
+       */
+      const owned = new Set([...bridge.tools.map((t) => t.name), 'request_user_input', ...(builtinsOn ? BUILTIN_TOOL_NAMES : [])]);
       /** The calls whose `function_call` (or `custom_tool_call`) line is in the log: what the barrier looks for. */
       const logged = new Set<string>();
       for (const line of lines) {
@@ -608,8 +623,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         for (const line of fresh) {
           if (!line) continue;
           journal.append(stream, line);
-          const id = callIdOf(line);
-          if (id) logged.add(id);
+          const call = callOf(line);
+          if (call) {
+            logged.add(call.callId);
+            // A tool Codex answered itself, with no item notification the drive sees: one line, its name and call id, never its arguments.
+            if (!owned.has(call.name)) log('codex: the model called a tool the harness neither runs nor journals (Codex answered it itself)', { tool: call.name.slice(0, 64), callId: call.callId.slice(0, 64) });
+          }
           if (endsTurn(line)) turnEnds++;
         }
       };

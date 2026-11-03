@@ -9,7 +9,9 @@ export type TomlValue = string | number | boolean | TomlValue[] | { [key: string
  * Codex features with built-in tools off (`codex features list`). The
  * model is offered only the harness's dynamic tools and `request_user_input`
  * (which Codex itself answers "unavailable in Default mode"): no shell, no `apply_patch`,
- * no images, no web, no sub-agents. The rest are side features that would
+ * no images, no web, no sub-agents. A code-mode-only model is also offered
+ * code mode's `exec` and the sub-agent tools, which Codex refuses to run
+ * with these off. The rest are side features that would
  * download plugins, call chatgpt.com or start a daemon.
  */
 export const BUILTINS_OFF: Record<string, boolean> = {
@@ -122,11 +124,17 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
     ...(options.cwd ? { projects: { [options.cwd]: { trust_level: 'untrusted' } } } : {}),
     features: {
       ...BUILTINS_OFF,
-      // Newer model families default to code-mode-only tools. Keep the
-      // harness's functions direct: their rollout call_id must identify the
-      // same effect as item/tool/call, including the never-replay barrier.
-      // Nested code-mode calls have separate IDs that the rollout omits.
-      code_mode: { enabled: true, direct_only_tool_namespaces: ['functions'] },
+      // Newer model families (gpt-5.6-sol, gpt-6-sol, gpt-6-astra, ...) are
+      // code-mode-only: Codex offers their tools nested under code mode's
+      // `exec`, whose calls have IDs the rollout omits. The `functions`
+      // namespace (the app's dynamic tools) stays direct, so a call's rollout
+      // call_id is the item/tool/call callId: the effect's key and the
+      // never-replay barrier's line. `direct_only_tool_namespaces` alone does
+      // that: on Codex 0.160 `enabled = true` sends the same requests, for
+      // these models and the rest, built-ins on or off
+      // (test/code-mode.test.ts pins the tools offered), so no model is
+      // opted into code mode, an under-development feature, for nothing.
+      code_mode: { enabled: false, direct_only_tool_namespaces: ['functions'] },
     },
     analytics: { enabled: false },
   };

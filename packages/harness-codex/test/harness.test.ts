@@ -318,11 +318,38 @@ describe('the Codex harness defaults (fake app-server, stand-in sandbox)', () =>
     const features = `\n${config}`.split('\n[').find((t) => t.startsWith('features]\n'))!;
     for (const feature of ['shell_tool', 'unified_exec', 'view_image', 'image_generation', 'multi_agent', 'plugins']) expect(features).toMatch(new RegExp(`^${feature} = false$`, 'm'));
     expect(features).not.toMatch(/^\w+ = true$/m);
-    expect(config).toContain('[features.code_mode]\nenabled = true\ndirect_only_tool_namespaces = ["functions"]');
+    expect(config).toContain('[features.code_mode]\nenabled = false\ndirect_only_tool_namespaces = ["functions"]');
     expect(config).toMatch(/^web_search = "disabled"$/m);
     // The thread's tools are the app's alone.
     const meta = JSON.parse(rolloutLines(state)[0]!) as { payload: { dynamic_tools: { name: string }[] } };
     expect(meta.payload.dynamic_tools.map((t) => t.name)).toEqual(workspaceTools().map((t) => t.name));
+  });
+
+  it('a built-in approval with the built-ins off (a backstop: Codex 0.160 offers no patch tool without an environment) is declined, and nothing is written', async () => {
+    const r = await newRig();
+    const a = await session(await tmp('hwc-'), r);
+    const { sessionId } = await a.sessions.start({ prompt: 'patch pwned.txt hello' });
+    const state = await waitTurns(a.sessions, sessionId, 1);
+    const callId = summarizeRollout(rolloutLines(state)).calls[0]!.callId;
+    expect(r.logs).toContainEqual({ message: 'codex: declined a built-in tool', fields: { method: 'item/fileChange/requestApproval', itemId: callId } });
+    expect(transcriptOf(state).at(-2)?.data).toMatchObject({ text: expect.stringContaining('apply_patch declined: rejected by user') });
+    expect(existsSync(join(driveOf(r, sessionId), 'pwned.txt'))).toBe(false);
+    expect(state.effectOrder.filter((e) => e.name.startsWith('tool.'))).toEqual([]);
+  });
+
+  it("a tool Codex answers itself (not the app's, not a journaled built-in) is logged once, with its name and call id, never its arguments", async () => {
+    const r = await newRig();
+    const a = await session(await tmp('hwc-'), r);
+    const { sessionId } = await a.sessions.start({ prompt: 'call read_file {"path":"missing.txt"}' });
+    await waitTurns(a.sessions, sessionId, 1);
+    await a.sessions.send(sessionId, 'foreign custom exec');
+    const state = await waitTurns(a.sessions, sessionId, 2);
+    const calls = summarizeRollout(rolloutLines(state)).calls;
+    expect(calls.map((c) => c.name)).toEqual(['read_file', 'exec']);
+    const foreign = r.logs.filter((l) => l.message.includes('neither runs nor journals'));
+    expect(foreign).toEqual([{ message: 'codex: the model called a tool the harness neither runs nor journals (Codex answered it itself)', fields: { tool: 'exec', callId: calls[1]!.callId } }]);
+    // Neither is an effect: Codex answered them, the harness ran nothing.
+    expect(state.effectOrder.filter((e) => e.name.startsWith('tool.')).map((e) => e.name)).toEqual(['tool.read_file']);
   });
 
   it("the provider key is a fresh placeholder per drive, which sandbox({ env }) can't replace", async () => {
@@ -361,6 +388,8 @@ describe('the Codex harness, built-ins on (fake app-server, stand-in sandbox)', 
     expect(readFileSync(join(driveOf(r, sessionId), 'b.txt'), 'utf8')).toBe('built-in\n');
     expect(readFileSync(join(driveOf(r, sessionId), 'notes.md'), 'utf8')).toBe('durable');
     expect(filesFromState(state)).toEqual({});
+    // The built-ins are the harness's own: no "a tool the harness neither runs nor journals" line for them.
+    expect(r.logs.filter((l) => l.message.includes('neither runs nor journals'))).toEqual([]);
     await a.world.close?.();
     await tearDown(r, sessionId);
     const b = await session(dataDir, r, { builtins: true });
