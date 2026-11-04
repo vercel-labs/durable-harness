@@ -20,6 +20,7 @@ import {
   type EffectIO,
   type Harness,
   hostToolIO,
+  type HostWorkspace,
   liveStreamName,
   rawSessions,
   readDoc,
@@ -756,5 +757,13 @@ describe('hostToolIO', () => {
     const out = hostToolIO(io, ctx, { signal: mine });
     expect(out).toMatchObject({ signal: mine, ctx, stepId: 'step_1', park: io.park, chaosArmedMs: 50, docs });
     expect(hostToolIO({ ...io, docs: undefined, chaosArmedMs: undefined }, ctx)).not.toHaveProperty('docs');
+  });
+
+  it("passes the session's workspace when the harness gives one, and leaves it out otherwise", () => {
+    const io: EffectIO = { signal: new AbortController().signal, progress: () => {}, stepId: 'step_1', park: async () => ({ stepId: 'p', settle: async () => true }) };
+    const ctx = {} as DriveContext;
+    const workspace = { root: '/workspace' } as HostWorkspace;
+    expect(hostToolIO(io, ctx, { workspace }).workspace).toBe(workspace);
+    expect(hostToolIO(io, ctx)).not.toHaveProperty('workspace');
   });
 });

@@ -573,6 +573,47 @@ describe('claudeCodeHarness, built-ins on (scripted SDK)', () => {
   });
 });
 
+describe("the app's tools on the session's workspace (scripted SDK, stand-in VM)", () => {
+  const TOKEN = `ghp_${'d'.repeat(36)}`;
+  const driveRead: HostTool<{ path: string }> = {
+    name: 'drive_read',
+    description: 'Read a file on the Drive',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    replay: 'safe',
+    async execute({ path }, io) {
+      if (!io.workspace) return 'no workspace';
+      return (await io.workspace.exec('cat', { args: [path] })).stdout;
+    },
+  };
+  const withToken: HostTool = {
+    name: 'push_with_token',
+    description: 'A command with a credential in its env',
+    inputSchema: { type: 'object', properties: {} },
+    replay: 'never',
+    async execute(_input, io) {
+      await io.workspace!.exec('true', { env: { GITHUB_TOKEN: TOKEN } });
+      return 'pushed';
+    },
+  };
+
+  it('a tool reaches the Drive the built-ins write, and a credential in its command env is refused, naming the key only', async () => {
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), fakeSdk(), { builtins: true, tools: [driveRead, withToken] });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'builtin Write {"file_path":"a.txt","content":"one"}');
+    await waitTurns(a.sessions, sessionId, 1);
+    await a.sessions.send(sessionId, 'call drive_read {"path":"a.txt"}');
+    await waitTurns(a.sessions, sessionId, 2);
+    await a.sessions.send(sessionId, 'call push_with_token {}');
+    const state = await waitTurns(a.sessions, sessionId, 3);
+
+    expect(state.effectOrder.find((e) => e.name === 'tool.drive_read')).toMatchObject({ status: 'completed', output: 'one' });
+    const push = state.effectOrder.find((e) => e.name === 'tool.push_with_token')!;
+    expect(push.status).toBe('failed');
+    expect(push.error?.message).toContain('GITHUB_TOKEN');
+    expect(push.error?.message).not.toContain(TOKEN);
+  });
+});
+
 describe('lostPrompts', () => {
   const store = (lines: TranscriptLine[]) => new JournalSessionStore({} as never, { records: lines.map((data, seq) => ({ stream: CLAUDE_STREAM, seq, data, batch: 0, stepId: 's', at: 0 })) });
   const state = {

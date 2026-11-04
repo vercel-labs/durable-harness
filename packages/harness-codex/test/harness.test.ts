@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createWorld } from '@workflow/world-local';
-import { durableSessions, QUEUE_PREFIX } from 'harness-world';
+import { durableSessions, type HostTool, QUEUE_PREFIX } from 'harness-world';
 import { filesFromState, readLedger, workspaceTools } from 'harness-world-hands';
 import { journalRecords, transcriptOf } from 'harness-world-process';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -304,6 +304,28 @@ describe('the Codex harness (fake app-server, stand-in sandbox)', () => {
     expect(state.effectOrder.filter((e) => e.name === 'sandbox.attach').length).toBeGreaterThanOrEqual(2);
     expect(transcriptOf(state).at(-1)?.data).toEqual({ type: 'turn', status: 'completed' });
     expect(turnsEnded(state)).toBe(1);
+  });
+});
+
+describe("the app's tools on the session's workspace (fake app-server, stand-in sandbox)", () => {
+  it('a tool writes and reads the Drive through its io, and the file is on the Drive Codex works on', async () => {
+    const r = await newRig();
+    const roundtrip: HostTool<{ text: string }> = {
+      name: 'drive_roundtrip',
+      description: 'Write a file on the Drive and read it back',
+      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      replay: 'never',
+      async execute({ text }, io) {
+        if (!io.workspace) return 'no workspace';
+        await io.workspace.writeFile('roundtrip.txt', text);
+        return (await io.workspace.exec('cat roundtrip.txt')).stdout;
+      },
+    };
+    const a = await session(await tmp('hwc-'), r, { tools: [roundtrip] });
+    const { sessionId } = await a.sessions.start({ prompt: 'call drive_roundtrip {"text":"hi"}' });
+    const state = await waitTurns(a.sessions, sessionId, 1);
+    expect(state.effectOrder.find((e) => e.name === 'tool.drive_roundtrip')).toMatchObject({ status: 'completed', output: 'hi' });
+    expect(readFileSync(join(driveOf(r, sessionId), 'roundtrip.txt'), 'utf8')).toBe('hi');
   });
 });
 

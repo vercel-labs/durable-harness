@@ -94,6 +94,7 @@ export type {
   Harness,
   HostTool,
   HostToolIO,
+  HostWorkspace,
   JsonObject,
   JsonValue,
   LiveResponseOptions,

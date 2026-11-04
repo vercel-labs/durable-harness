@@ -98,6 +98,18 @@ every other harness here: `durableSessions({ world, harness })`, then
 
 ## Tools
 
+**The app's tools reach the Drive.** A `HostTool` runs in the Function, and
+its `io.workspace` is the session's `/workspace` in the VM (the machine's
+`workspace`: files and commands, the same interface as `virtual()`'s), so a
+tool can read what the model's commands wrote, run a check, or stage a
+change. Its commands run in the VM as the unprivileged user, beside Codex
+and the model's commands, so their `env` passes the same credential checks
+as every other command: a credential is refused (a `TypeError` naming the
+key) and stays in the Function. A tool that needs one does that part
+itself in the Function (to push a branch: `git bundle create` on the
+Drive, `readFile` the bundle, push it from the Function). A tool that
+changes the Drive is `replay: 'never'`.
+
 **With `builtins: true`, Codex's own tools are on**: its shell (unified
 exec, `exec_command`; `apply_patch` runs through it) on `/workspace`, under
 Codex's sandbox in the VM (`sandboxMode`). Every command and patch asks the

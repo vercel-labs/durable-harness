@@ -471,11 +471,44 @@ export interface HostTool<Input = any> {
 /** Where a hybrid session is driven, from least to most capable. */
 export type Lane = 'browser' | 'function' | 'sandbox';
 
+/**
+ * The session's workspace as a `HostTool` gets it (`HostToolIO.workspace`):
+ * harness-world-hands' `WorkspaceMachine`, typed here by the part a tool uses,
+ * so the kernel depends on no workspace package. Paths are absolute, or
+ * relative to `root`.
+ */
+export interface HostWorkspace {
+  /** `/workspace`. */
+  readonly root: string;
+  exec(
+    command: string,
+    options?: { cwd?: string; env?: Record<string, string>; args?: string[]; stdin?: string; signal?: AbortSignal; timeoutMs?: number }
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  readFile(path: string): Promise<Uint8Array>;
+  writeFile(path: string, content: string | Uint8Array, options?: { mode?: number; append?: boolean }): Promise<void>;
+  stat(path: string): Promise<{ type: 'file' | 'directory' | 'symlink'; size: number; mode: number; mtimeMs: number } | undefined>;
+  list(dir: string): Promise<{ name: string; type: 'file' | 'directory' | 'symlink' }[]>;
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+  remove(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+}
+
 export interface HostToolIO {
   signal: AbortSignal;
   progress(chunk: unknown): void;
   /** The drive this call belongs to, for tools that record their own effects. */
   ctx: DriveContext;
+  /**
+   * The session's workspace, when the harness attached one: the session's
+   * Vercel Sandbox `/workspace` for Claude Code and Codex (the Drive the
+   * model's own tools work on). Undefined for a harness that attached none
+   * (a virtual workspace, a tool-less session). Its commands run in the VM
+   * as the unprivileged user, beside the CLI and the model's commands, so
+   * their `env` passes the same credential checks as every other command
+   * (a `TypeError` naming the key): a credential stays in the Function. A
+   * tool that changes the Drive is `replay: 'never'` (the Drive is durable,
+   * not transactional).
+   */
+  workspace?: HostWorkspace;
   /** See `EffectIO`: present when the harness passes the effect's io through. */
   stepId?: string;
   park?: EffectIO['park'];
