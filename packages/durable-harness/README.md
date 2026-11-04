@@ -108,7 +108,7 @@ message arrives while a turn is running, what happens depends on the harness:
 
 | Harness | `steer` during a turn | `prompt` or `followUp` during a turn |
 | --- | --- | --- |
-| Pi (`durable-harness/pi-durable` and `durable-harness/pi`) | Goes into the running turn after its current tool calls (Pi's `steer`). | Joins the running turn (Pi's `followUp`). Pi answers it after the turn's own answer, before the turn ends, so the turn's stream carries both answers and ends once. |
+| Pi (`durable-harness/pi-durable` and `durable-harness/pi`) | Goes into the running turn after its current tool calls (Pi's `steer`). | Joins the running turn while Pi is still working on it (Pi's `followUp`). Pi answers it after the turn's own answer, before the turn ends, so the turn's stream carries both answers and ends once. One that arrives as Pi is finishing gets a turn of its own. |
 | OpenCode | Goes into the running turn at OpenCode's next step. | Waits for the turn to end, then starts its own turn. |
 | fx | Goes into the running turn at its next model request. | Waits for the turn to end. Messages that waited together then start one turn. |
 | Claude Code | Goes into the running turn, at priority `next`. | Waits for the turn to end, then starts its own turn. |
