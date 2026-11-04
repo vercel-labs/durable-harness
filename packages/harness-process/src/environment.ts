@@ -211,12 +211,37 @@ export interface SessionMachine {
   /** The workspace root: `/workspace`, the Drive. */
   readonly root: string;
   /**
+   * The id of the Drive at `root` (the `hw.sandbox` record's `driveId`): a
+   * different id on a later attach means the session's files were lost.
+   * Undefined on a machine with no Drive record.
+   */
+  readonly driveId?: string;
+  /**
    * The session's `/workspace` as files and commands (`RemoteMachine`: the
    * relay's helper over `ENV_CALL`, as the unprivileged user, rooted at
    * `/workspace`): what a Function-tier runtime's tools run on in a sandbox,
    * the same interface as `virtual()`'s.
    */
   readonly workspace: WorkspaceMachine;
+  /**
+   * Run `fn` on the session's workspace before anything else runs on this
+   * attach, with commands whose `env` may carry credentials (a token for a
+   * private clone): only the structural rules apply to it (valid names, no
+   * NUL, no loader variables), not the credential rules of `MachineSpawn.env`.
+   *
+   * The values reach the VM only in the commands `fn` runs. Nothing the
+   * model drives is running yet (an attach kills what an earlier one left,
+   * and this one has started nothing), so no process of the same user is
+   * there to read a command's environment. When `fn` settles, the session's
+   * processes are killed (the helper that carried the values, and anything
+   * the commands left running) and the workspace it was given refuses every
+   * operation. Refused with a `TypeError` once anything started on this
+   * attach (a `spawn`, or a command through `workspace`); `spawn` and
+   * `workspace`'s commands are refused while `fn` runs. What the commands
+   * write stays on the Drive: keep credentials out of files (a remote URL,
+   * the npm config).
+   */
+  provision?<T>(fn: (workspace: WorkspaceMachine) => Promise<T>): Promise<T>;
   /** The cache directories, as paths in the VM. */
   readonly dirs: Readonly<Record<CacheDir, string>>;
   /** Aborted when the link to the VM is lost (a socket dropped, the relay superseded or gone): re-attach. */

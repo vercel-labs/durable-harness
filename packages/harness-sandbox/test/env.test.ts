@@ -141,6 +141,63 @@ describe("a command's environment", () => {
   });
 });
 
+describe('provisioning (SessionMachine.provision)', () => {
+  const TOKEN = `ghp_${'a'.repeat(36)}`;
+  /** Whether the command saw the credential: its length only, so nothing prints it. */
+  const CARRIED = `[ "\${#GITHUB_TOKEN}" -eq ${TOKEN.length} ] && echo carried`;
+
+  it("its commands take a credential in their env, even one of the Function's own; afterwards its workspace refuses everything, and the plain workspace still refuses the credential", async () => {
+    const sb = await standIn();
+    process.env.DH_TEST_PROVISION_TOKEN = TOKEN;
+    try {
+      let given: { exec: (command: string) => Promise<unknown> } | undefined;
+      const out = await sb.machine.provision!(async (ws) => {
+        given = ws;
+        return (await ws.exec(CARRIED, { env: { GITHUB_TOKEN: TOKEN } })).stdout;
+      });
+      expect(out).toBe('carried\n');
+      expect(await given!.exec('true').catch((e: Error) => e)).toMatchObject({ code: 'EGONE' });
+      const err = await sb.machine.workspace.exec('true', { env: { GITHUB_TOKEN: TOKEN } }).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(TypeError);
+      expect((err as Error).message).toContain('GITHUB_TOKEN');
+      expect((err as Error).message).not.toContain(TOKEN);
+    } finally {
+      delete process.env.DH_TEST_PROVISION_TOKEN;
+    }
+  });
+
+  it('is closed once anything ran on the attach: a workspace command, or a spawn', async () => {
+    const a = await standIn();
+    await a.machine.workspace.exec('true');
+    expect(await a.machine.provision!(async () => 'ran').catch((e: Error) => e)).toBeInstanceOf(TypeError);
+    const b = await standIn();
+    await (await b.machine.spawn({ command: '/bin/sh', args: ['-c', 'true'] })).exited;
+    expect(await b.machine.provision!(async () => 'ran').catch((e: Error) => e)).toBeInstanceOf(TypeError);
+  });
+
+  it("while it runs nothing else starts, and the structural rules still apply; afterwards the machine is the session's again", async () => {
+    const sb = await standIn();
+    await sb.machine.provision!(async (ws) => {
+      expect(await sb.machine.spawn({ command: '/bin/sh', args: ['-c', 'true'] }).catch((e: Error) => e)).toBeInstanceOf(Error);
+      expect(await sb.machine.workspace.exec('true').catch((e: Error) => e)).toBeInstanceOf(Error);
+      expect(await sb.machine.provision!(async () => 'nested').catch((e: Error) => e)).toBeInstanceOf(TypeError);
+      const err = await ws.exec('true', { env: { LD_PRELOAD: '/x.so' } }).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(TypeError);
+      expect((err as Error).message).toContain('LD_PRELOAD');
+    });
+    expect((await sb.machine.workspace.exec('echo ok')).stdout).toBe('ok\n');
+  });
+
+  // The degraded stand-in kills by process group, which a command in a session of its own escapes; the privileged tier's cgroup doesn't let it.
+  it.skipIf(!PRIV)('a process its commands leave running does not outlive it', async () => {
+    const sb = await standIn();
+    const pid = await sb.machine.provision!(async (ws) => Number((await ws.exec('setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $!', { env: { GITHUB_TOKEN: TOKEN } })).stdout.trim()));
+    expect(pid).toBeGreaterThan(0);
+    for (let i = 0; i < 50 && alive(pid); i++) await sleep(100);
+    expect(alive(pid)).toBe(false);
+  });
+});
+
 describe('the fence', () => {
   it('without a fenced token nothing that can change the VM is sent; reads still work', async () => {
     const sb = await standIn();

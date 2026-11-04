@@ -109,3 +109,5 @@ function kernelOptions(options: ClaudeCodeHarnessOptions, fn: string): { options
 
 /** The pinned Agent SDK version (`@anthropic-ai/claude-agent-sdk`). */
 export { CLAUDE_AGENT_SDK_VERSION } from 'harness-world-claude-code';
+/** `claudeCode({ prepare })`'s hook and what it gets. */
+export type { DriveToPrepare, PrepareDrive } from 'harness-world-process';

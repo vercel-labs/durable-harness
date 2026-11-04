@@ -16,7 +16,8 @@ export interface ChaosSpec {
   /**
    * Which effect to crash during: a tool call, a model stream, either, or a
    * machine command (`sandbox`: hybrid's `run_on_machine`, or the older
-   * `sandbox_exec`; the only target of the parked kinds). The attach drills
+   * `sandbox_exec`; the only target of the parked kinds; a `process` crash
+   * also targets a sandbox harness's `sandbox.prepare`). The attach drills
    * (`sandbox-new-vm`, `sandbox-zombie`) fire at the attach of the session's
    * sandbox whatever this says (`sandbox` by convention).
    */
@@ -192,7 +193,7 @@ export function chaosMatches(spec: ChaosSpec, effectName: string): boolean {
   const kind = chaosKind(spec);
   // The attach drills fire where the session's sandbox is attached: a turn's start.
   if (ATTACH_DRILLS.includes(kind)) return effectName === 'sandbox.attach';
-  if (spec.at === 'sandbox') return effectName === 'tool.run_on_machine' || effectName === 'tool.sandbox_exec';
+  if (spec.at === 'sandbox') return effectName === 'tool.run_on_machine' || effectName === 'tool.sandbox_exec' || (kind === 'process' && effectName === 'sandbox.prepare');
   // The parked kinds only ever target a sandbox command; a stopped session VM (D1) a tool call.
   if (kind === 'sandbox-command' || kind === 'drop-callback') return false;
   if (kind === 'sandbox-vm') return spec.at === 'tool' && effectName.startsWith('tool.');

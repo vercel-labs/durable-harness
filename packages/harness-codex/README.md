@@ -167,6 +167,19 @@ export const coder = codex({ model: 'openai/gpt-5.4-mini', builtins: true })
   machine the factory didn't brand, a drive fails its turn with
   `Unavailable('sandbox_required')`.
 
+**Preparing the Drive.** `prepare` is the app's own setup of the session's
+Drive (a repository, its install), run in the drive right after the attach
+and before Codex starts, once per Drive: the session's first attach, and
+again on a new Drive. Its workspace's commands may carry a credential in
+their `env`, before anything else runs on the attach, and the session's
+processes are killed when it returns. It is the same hook as Claude
+Code's, with the same rules (it must be idempotent; a failure fails the
+turn and the next message runs it again): see
+[harness-world-claude-code's Preparing the Drive](../harness-claude-code/README.md#preparing-the-drive).
+Codex's commands run as the same user with no pid namespace of their own,
+which is why a credential goes only into `prepare`'s commands, never into
+one that runs while Codex does.
+
 ## Using a session (every World)
 
 ```ts
@@ -196,6 +209,7 @@ the same live stream. Sends go to the server, which drives.
 | Option | Default | |
 | --- | --- | --- |
 | `tools` | none | The app's tools, run in the Function: its only tools, or (`builtins: true`) next to the built-ins. Fixed for a thread at its start |
+| `prepare` | | The app's setup of a new Drive, before Codex starts (see [Where it runs](#where-it-runs)) |
 | `builtins` | `false` | Codex's shell and `apply_patch` on `/workspace`, each call recorded (see [Tools](#tools)) |
 | `sandboxMode` | `read-only` with the built-ins off; with them, `workspace-write` if bwrap's self-test passes in the VM, else `danger-full-access` | Codex's sandbox for its commands (was `sandbox`; needs `builtins: true`) |
 | `model` | `openai/gpt-5.4-mini` | An AI Gateway model id |

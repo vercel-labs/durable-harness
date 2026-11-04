@@ -42,7 +42,8 @@ Each drive (one queue delivery):
 2. attaches the session's VM (the `sandbox.attach` fact: the Drive, a VM
    that is running or a fresh one on the same Drive, the relay armed with the
    drive's fence), with the VM's model port served by the drive's
-   `gatewayHandler`;
+   `gatewayHandler`; on a Drive the session's `prepare` hasn't finished on
+   yet, runs it before anything else (see [Preparing the Drive](#preparing-the-drive));
 3. starts `query()` with a spawner of its own (`sandboxSpawn`): the CLI runs
    in the VM as the unprivileged `agent` user, from the base image's pinned
    build (`CLAUDE_VM_EXECUTABLE`), with an environment built only from the
@@ -135,6 +136,51 @@ model, adds the Gateway credential (`credential()`, default
 `sandbox({ budget })` in the log (`journalLedger`). No credential is ever in
 the VM.
 
+### Preparing the Drive
+
+`prepare` is the app's own setup of the session's Drive: a repository, its
+install, the app's files, there before the first turn without the model
+doing it.
+
+```ts
+claudeCodeHarness({
+  sandbox,
+  builtins: true,
+  prepare: async ({ workspace, signal }) => {
+    if (await workspace.stat('/workspace/repo/.git')) return; // idempotent
+    const header = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${await installationToken()}`).toString('base64')}`;
+    const clone = await workspace.exec('git clone https://github.com/acme/app /workspace/repo', {
+      env: { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0: header },
+      signal,
+    });
+    if (clone.exitCode !== 0) throw new Error(`git clone exited ${clone.exitCode}`);
+    await workspace.exec('npm ci', { cwd: '/workspace/repo', signal });
+  },
+});
+```
+
+- **Once per Drive.** It runs in the drive right after the attach, on the
+  session's first attach and again when the Drive is a new one (its files
+  were lost), each run a `safe` effect `sandbox.prepare` keyed by the Drive
+  (`prepare:<driveId>#<attempt>`). A replay skips it. A crash or a lost link
+  while it runs runs it again on what it left: it must be idempotent. If it
+  throws, the turn fails with an `Unavailable` that quotes its message, no
+  CLI starts, and the session's next message runs it again.
+- **Credentials in one command's env.** Its `workspace` is the session
+  machine's `provision` workspace: a command's `env` takes a credential
+  (only the structural rules apply: valid names, no NUL, no loader
+  variables), which the model's commands and `sandbox({ env })` never do.
+  It runs before anything else on the attach (an attach kills what an
+  earlier one left, and the machine refuses `provision` once a process
+  started on it), so no process the model drives is there to read the
+  command's environment; when `prepare` returns, the session's processes
+  are killed, the relay's helper that carried the values with them. Keep
+  credentials out of what the commands write (a remote URL, the npm
+  config): the Drive keeps it, and the model can read the Drive. Pass a
+  credential to the one command that needs it, not to an install that runs
+  the repository's own scripts. Its error message is recorded in the log
+  and shown in the turn's error: keep credentials out of it too.
+
 ## Install
 
 ```bash
@@ -154,6 +200,7 @@ one in the tests (`test/fixtures/golden-2.1.289.json`).
 | --- | --- | --- |
 | `sandbox` | (required) | The session's sandbox: `durable-harness`'s `claudeCode()` builds it from `workspace: sandbox()` |
 | `tools` | none | The app's tools, over MCP, in the Function |
+| `prepare` | | The app's setup of a new Drive, before the CLI starts (see [Preparing the Drive](#preparing-the-drive)) |
 | `builtins` | `false` | Claude Code's own tools in the VM (see [Tools](#tools)) |
 | `disallowedTools` | | More built-ins to turn off, on top of `CLAUDE_BUILTINS_OFF` |
 | `builtinReplay` | `claudeBuiltinReplay` (reads `safe`) | A record or a function: what the recovery note says about an interrupted built-in, and whether its outcome waits for `FSYNC` |
@@ -182,6 +229,7 @@ replacement: `workspace: sandbox()`, `sandbox({ env })`).
 | Record | Written as | Key |
 | --- | --- | --- |
 | The attach | a `never` effect `sandbox.attach` (the `hw.sandbox` document's edits commit with it) | `sandbox.attach:<uuid>` |
+| `prepare` on a Drive, one per attempt | a `safe` effect `sandbox.prepare`, its input the Drive's id | `prepare:<driveId>#<n>` |
 | A placed submission | a record-only effect `place` | `place:<first submission id>` |
 | Transcript lines and normalized transcript entries | journal batches, a record-only effect `journal` | `journal:<n>` (streams `claude`, `claude/<subpath>`, `transcript`) |
 | Model spend | journal records (stream `hw.spend`), per turn and session | |

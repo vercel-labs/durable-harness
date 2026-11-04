@@ -5,7 +5,7 @@ import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { type DriveContext, type DurableSessions, durableSessions, type HostTool, QUEUE_PREFIX, readDoc, type SessionState, UNAVAILABLE_STEP } from 'harness-world';
 import { filesFromState, readLedger, unsafeTools, workspaceTools } from 'harness-world-hands';
 import { existsSync, readFileSync } from 'node:fs';
-import { groupAlive, journalRecords, type SessionMachine, transcriptOf } from 'harness-world-process';
+import { groupAlive, journalRecords, PREPARE_STEP, type PrepareDrive, type SessionMachine, transcriptOf } from 'harness-world-process';
 import { FILES_LOST_NOTE, SANDBOX_DOC, sessionName } from 'harness-world-sandbox';
 import type { FakeSandboxApi } from 'harness-world-sandbox/testing/fake-api';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -81,6 +81,8 @@ async function session(
     tools?: HostTool[];
     /** The platform (default a fresh one). */
     api?: FakeSandboxApi;
+    /** The app's setup of a new Drive. */
+    prepare?: PrepareDrive;
   } = {}
 ) {
   const world = createWorld({ dataDir, recoverActiveRuns: opts.recover ?? false });
@@ -100,6 +102,7 @@ async function session(
       // The stand-in VM is this machine: no bubblewrap on macOS.
       unsandboxedCommands: true,
       ...(opts.idleMs ? { idleMs: opts.idleMs } : {}),
+      ...(opts.prepare ? { prepare: opts.prepare } : {}),
     }),
     ...(opts.chaos ? { chaos: true, crash: opts.crash ?? (() => {}) } : {}),
   });
@@ -570,6 +573,127 @@ describe('claudeCodeHarness, built-ins on (scripted SDK)', () => {
     const state = await waitTurns(a.sessions, sessionId, 1);
     expect(state.effectOrder.find((e) => e.name === 'tool.Bash')).toMatchObject({ status: 'failed', error: { interrupted: true } });
     expect(shell).toBeGreaterThan(0);
+  });
+});
+
+describe('claudeCodeHarness({ prepare }) (scripted SDK, stand-in VM)', () => {
+  const TOKEN = `ghp_${'b'.repeat(36)}`;
+  /** A prepare that records the Drive it ran on and leaves a file there, with a credential in its command's env (its length is all the command checks). */
+  const recording = (runs: (string | undefined)[]): PrepareDrive => async ({ workspace, driveId }) => {
+    runs.push(driveId);
+    const r = await workspace.exec(`[ "\${#GITHUB_TOKEN}" -eq ${TOKEN.length} ] && echo prepared >> prepared.txt`, { env: { GITHUB_TOKEN: TOKEN } });
+    if (r.exitCode !== 0) throw new Error(`the setup command failed: ${r.stderr}`);
+  };
+  const prepareSteps = (state: SessionState) => state.effectOrder.filter((e) => e.name === PREPARE_STEP);
+
+  it('runs once per Drive, before the CLI starts, with a credential in a command env that never reaches the log; the next turn does not run it again', async () => {
+    const runs: (string | undefined)[] = [];
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), fakeSdk(), { builtins: true, prepare: recording(runs) });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'builtin Read {"file_path":"prepared.txt"}');
+    await waitTurns(a.sessions, sessionId, 1);
+    await a.sessions.send(sessionId, 'hello');
+    const state = await waitTurns(a.sessions, sessionId, 2);
+
+    const driveId = readDoc(state, SANDBOX_DOC).value.driveId;
+    expect(runs).toEqual([driveId]);
+    expect(readFileSync(join(driveOf(a.api, sessionId), 'prepared.txt'), 'utf8')).toBe('prepared\n');
+    // One step, before the first placement: the CLI's first Read found the file.
+    const steps = prepareSteps(state);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ key: `prepare:${driveId}#1`, status: 'completed', input: { driveId } });
+    expect(state.effectOrder.indexOf(steps[0]!)).toBeLessThan(state.effectOrder.findIndex((e) => e.name === 'place'));
+    expect(state.effectOrder.find((e) => e.name === 'tool.Read')).toMatchObject({ status: 'completed' });
+    expect(JSON.stringify(state.effectOrder)).not.toContain(TOKEN);
+  });
+
+  it('a new Drive (its files were lost): it runs again, on the new one', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hwcc-'));
+    const runs: (string | undefined)[] = [];
+    const a = await session(dataDir, fakeSdk(), { builtins: true, prepare: recording(runs) });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    await waitTurns(a.sessions, sessionId, 1);
+    await a.drained();
+    const name = sessionName('prj_stand_in', sessionId);
+    await (await a.api.getSandbox(name))!.delete();
+    a.api.dropDrive(name);
+
+    const b = await session(dataDir, fakeSdk(), { builtins: true, api: a.api, prepare: recording(runs) });
+    await b.sessions.send(sessionId, 'builtin Read {"file_path":"prepared.txt"}');
+    const state = await waitTurns(b.sessions, sessionId, 2);
+    const driveId = readDoc(state, SANDBOX_DOC).value.driveId;
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).not.toBe(runs[1]);
+    expect(runs[1]).toBe(driveId);
+    expect(prepareSteps(state).map((e) => [e.key, e.status])).toEqual([
+      [`prepare:${runs[0]}#1`, 'completed'],
+      [`prepare:${driveId}#1`, 'completed'],
+    ]);
+    expect(readFileSync(join(driveOf(b.api, sessionId), 'prepared.txt'), 'utf8')).toBe('prepared\n');
+    expect(state.effectOrder.filter((e) => e.name === 'tool.Read').map((e) => e.status)).toEqual(['completed']);
+  });
+
+  it('a failure fails the turn with an Unavailable and starts no CLI; the next message runs it again', async () => {
+    let fail = true;
+    const runs: (string | undefined)[] = [];
+    const sdk = fakeSdk();
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk, {
+      prepare: async (drive) => {
+        if (fail) throw new Error('the clone failed');
+        await recording(runs)(drive);
+      },
+    });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    const failed = await until(async () => {
+      const s = await a.sessions.inspect(sessionId);
+      return [...s.effects.values()].find((e) => e.name === UNAVAILABLE_STEP)?.input as { code: string; message: string } | undefined;
+    });
+    expect(failed).toMatchObject({ code: 'unavailable', message: "The session's Drive could not be prepared: the clone failed" });
+    expect(sdk.queries).toHaveLength(0);
+
+    fail = false;
+    await a.sessions.send(sessionId, 'hello again');
+    const state = await until(async () => {
+      const s = await a.sessions.inspect(sessionId);
+      const done = prepareSteps(s).some((e) => e.status === 'completed') && transcriptOf(s).some((r) => r.data.type === 'turn' && (r.data as { status?: string }).status === 'completed');
+      return done ? s : undefined;
+    });
+    const driveId = readDoc(state, SANDBOX_DOC).value.driveId;
+    expect(prepareSteps(state).map((e) => [e.key, e.status])).toEqual([
+      [`prepare:${driveId}#1`, 'failed'],
+      [`prepare:${driveId}#2`, 'completed'],
+    ]);
+    expect(runs).toEqual([driveId]);
+    expect(sdk.queries).toHaveLength(1);
+  });
+
+  it('a crash mid-run: another process runs it again (it must be idempotent), then the turn', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hwcc-'));
+    let crashed!: () => void;
+    const died = new Promise<void>((r) => (crashed = r));
+    let runs = 0;
+    const prepare: PrepareDrive = async ({ workspace }) => {
+      runs++;
+      await workspace.exec('echo run >> prepared.txt');
+      await new Promise((r) => setTimeout(r, 1500));
+    };
+    const a = await session(dataDir, fakeSdk(), { chaos: true, crash: () => crashed(), prepare });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.chaos(sessionId, { at: 'sandbox', afterMs: 300 });
+    await a.sessions.send(sessionId, 'hello');
+    await died;
+    await a.world.close?.();
+
+    const b = await session(dataDir, fakeSdk(), { chaos: true, recover: true, api: a.api, prepare });
+    const state = await waitTurns(b.sessions, sessionId, 1);
+    expect(runs).toBe(2);
+    expect(readFileSync(join(driveOf(b.api, sessionId), 'prepared.txt'), 'utf8')).toBe('run\nrun\n');
+    const steps = prepareSteps(state);
+    expect(new Set(steps.map((e) => e.key)).size).toBe(1);
+    expect(steps.at(-1)).toMatchObject({ status: 'completed' });
+    expect(transcriptOf(state).map((r) => r.data).at(-1)).toEqual({ type: 'turn', status: 'completed' });
   });
 });
 
