@@ -73,6 +73,23 @@ const HARNESS_NAMES: ReadonlySet<string> = new Set([
 const refuse = (key: string, why: string) => new TypeError(`harness-sandbox: spawn env ${JSON.stringify(key)} refused: ${why}`);
 
 /**
+ * The structural rules alone, for the commands of `SessionMachine.provision`
+ * (credentials allowed): a valid name, a string value without NUL, and none
+ * of the names that change how a loader or a shell starts. A failing key is a
+ * `TypeError` naming the key, never the value.
+ */
+export function checkProvisionEnv(env: Readonly<Record<string, string>> | undefined): void {
+  if (env === undefined) return;
+  if (typeof env !== 'object' || env === null || Array.isArray(env)) throw new TypeError('harness-sandbox: provision env must be an object of strings');
+  for (const [key, value] of Object.entries(env)) {
+    if (!ENV_NAME.test(key)) throw refuse(key, 'not a valid variable name');
+    if (typeof value !== 'string') throw refuse(key, 'the value is not a string');
+    if (value.includes('\0')) throw refuse(key, 'the value holds a NUL byte');
+    if (LOADER_NAMES.test(key)) throw refuse(key, 'it changes how a loader or shell starts');
+  }
+}
+
+/**
  * Throw a `TypeError` for the first `env` entry the rules refuse. `hostEnv` is
  * the Function's own environment (default `process.env`): a value equal to
  * one of its values of 16+ characters is a credential leaving the Function.

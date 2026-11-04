@@ -1,9 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createWorld } from '@workflow/world-local';
-import { durableSessions, QUEUE_PREFIX } from 'harness-world';
+import { durableSessions, QUEUE_PREFIX, readDoc } from 'harness-world';
 import { filesFromState, readLedger, workspaceTools } from 'harness-world-hands';
-import { journalRecords, transcriptOf } from 'harness-world-process';
+import { journalRecords, PREPARE_STEP, type PrepareDrive, transcriptOf } from 'harness-world-process';
+import { SANDBOX_DOC } from 'harness-world-sandbox/cli';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { rolloutStream, summarizeRollout, THREAD_STREAM } from '../src/rollout.ts';
 import { cacheRootOf, driveOf, fileLines, nameOf, type Rig, rig, rolloutFile, rolloutLines, session, standInEnv, tearDown, threadOf, tmp, turnsEnded, until, vmOf, waitTurns } from './stand-in.ts';
@@ -304,6 +305,36 @@ describe('the Codex harness (fake app-server, stand-in sandbox)', () => {
     expect(state.effectOrder.filter((e) => e.name === 'sandbox.attach').length).toBeGreaterThanOrEqual(2);
     expect(transcriptOf(state).at(-1)?.data).toEqual({ type: 'turn', status: 'completed' });
     expect(turnsEnded(state)).toBe(1);
+  });
+});
+
+describe('the Codex harness, prepare (fake app-server, stand-in sandbox)', () => {
+  it('runs once per Drive, before Codex starts, with a credential in a command env that never reaches the log; a fresh VM on the same Drive does not run it again', async () => {
+    const r = await newRig();
+    const dataDir = await tmp('hwc-');
+    const token = `ghp_${'c'.repeat(36)}`;
+    const runs: (string | undefined)[] = [];
+    const prepare: PrepareDrive = async ({ workspace, driveId }) => {
+      runs.push(driveId);
+      const out = await workspace.exec(`[ "\${#GITHUB_TOKEN}" -eq ${token.length} ] && echo prepared >> prepared.txt`, { env: { GITHUB_TOKEN: token } });
+      if (out.exitCode !== 0) throw new Error(`the setup command failed: ${out.stderr}`);
+    };
+    const a = await session(dataDir, r, { harness: { prepare } });
+    const { sessionId } = await a.sessions.start({ prompt: 'hello' });
+    await waitTurns(a.sessions, sessionId, 1);
+    await a.world.close?.();
+    await tearDown(r, sessionId);
+
+    const b = await session(dataDir, r, { harness: { prepare } });
+    await b.sessions.send(sessionId, 'hello again');
+    const state = await waitTurns(b.sessions, sessionId, 2);
+    const driveId = readDoc(state, SANDBOX_DOC).value.driveId;
+    expect(runs).toEqual([driveId]);
+    expect(readFileSync(join(driveOf(r, sessionId), 'prepared.txt'), 'utf8')).toBe('prepared\n');
+    const steps = state.effectOrder.filter((e) => e.name === PREPARE_STEP);
+    expect(steps.map((e) => [e.key, e.status])).toEqual([[`prepare:${driveId}#1`, 'completed']]);
+    expect(state.effectOrder.indexOf(steps[0]!)).toBeLessThan(state.effectOrder.findIndex((e) => e.name === 'place'));
+    expect(JSON.stringify(state.effectOrder)).not.toContain(token);
   });
 });
 

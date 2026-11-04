@@ -19,6 +19,7 @@ export type { NativeJournalOptions } from './journal.ts';
 export { placeSubmissions, waitForSubmissions } from './inbox.ts';
 export type { WaitOptions } from './inbox.ts';
 export { clip, failureText, Mutex, toolBridge, toolKey } from './tools.ts';
+export { type DriveToPrepare, PREPARE_STEP, type PrepareDrive, prepareDrive, prepareKeyPrefix } from './prepare.ts';
 export type { BridgedTool, ToolBridge, ToolBridgeOptions, ToolResult } from './tools.ts';
 export { zodFromJsonSchema, zodShapeFromJsonSchema } from './zod.ts';
 export type { JsonSchemaObject } from './zod.ts';

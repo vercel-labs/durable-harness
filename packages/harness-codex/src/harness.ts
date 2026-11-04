@@ -17,6 +17,8 @@ import {
   Mutex,
   NativeJournal,
   placeSubmissions,
+  type PrepareDrive,
+  prepareDrive,
   recoveryNote,
   restartEvent,
   type SessionMachine,
@@ -121,6 +123,17 @@ export interface CodexHarnessOptions {
    * next to the built-ins. Default none.
    */
   tools?: HostTool[];
+  /**
+   * The app's own setup of the session's Drive, run in the drive right after
+   * the attach and before Codex starts, once per Drive (the session's first
+   * attach, and again on a new Drive: its files were lost). Its workspace's
+   * commands may carry credentials in their `env` (a token for a private
+   * clone), which never reach the transcript or the model's commands. A
+   * crash or a lost link mid-run runs it again: it must be idempotent. A
+   * failure fails the turn with an `Unavailable`; the next message runs it
+   * again. See `prepareDrive` (harness-world-process).
+   */
+  prepare?: PrepareDrive;
   /**
    * Codex's own shell and `apply_patch` (and `view_image`), on `/workspace`
    * in the session's VM. Default false (tool-less: `tools` are its only
@@ -500,6 +513,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     let builtins: BuiltinCalls | undefined;
     const clamps = new Map<string, ReturnType<typeof setTimeout>>();
     try {
+      // The app's own setup of a new Drive, before anything else runs on the machine.
+      const prepared = await prepareDrive(ctx, machine, options.prepare, { harness: 'Codex' });
+      if (prepared) driveFiles.changed({ tool: 'prepare', callId: prepared });
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';

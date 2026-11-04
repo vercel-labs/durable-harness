@@ -18,6 +18,8 @@ import {
   NativeJournal,
   openTurn,
   placeSubmissions,
+  type PrepareDrive,
+  prepareDrive,
   type ProviderTool,
   recoveryNote,
   restartEvent,
@@ -171,6 +173,17 @@ export interface ClaudeCodeHarnessOptions {
    * none.
    */
   tools?: HostTool[];
+  /**
+   * The app's own setup of the session's Drive, run in the drive right after
+   * the attach and before the CLI starts, once per Drive (the session's first
+   * attach, and again on a new Drive: its files were lost). Its workspace's
+   * commands may carry credentials in their `env` (a token for a private
+   * clone), which never reach the transcript or the model's commands. A
+   * crash or a lost link mid-run runs it again: it must be idempotent. A
+   * failure fails the turn with an `Unavailable`; the next message runs it
+   * again. See `prepareDrive` (harness-world-process).
+   */
+  prepare?: PrepareDrive;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -463,6 +476,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         let noteSent = false;
         // The Drive's manifest: what the Files panel shows, kept in the log so it reads with no VM.
         const driveFiles = sandbox.files?.(ctx, machine);
+        // The app's own setup of a new Drive, before anything else runs on the machine.
+        const prepared = await prepareDrive(ctx, machine, options.prepare, { harness: 'Claude Code' });
+        if (prepared) driveFiles?.changed({ tool: 'prepare', callId: prepared });
 
         // Claude Code's own sandbox (P0.10): bubblewrap must work in the VM. A failed self-test is tried once more (a slow relay, a timeout).
         const ownSandbox = builtinsOn && ((await bwrapWorks(machine, ctx.signal)) || (await bwrapWorks(machine, ctx.signal)));

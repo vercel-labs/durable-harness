@@ -15,14 +15,20 @@
  * - **The env.** Every `spawn`'s `env` passes `checkSpawnEnv` first (§3.1 and
  *   the `process.env` equality rule): a `TypeError` naming the key. The model
  *   key's name (`PLACEHOLDER_NAMES`) passes only with this attach's key.
+ * - **Provisioning.** `provision` runs the app's own setup with credentials
+ *   allowed in its commands' env (`checkProvisionEnv`), only while nothing
+ *   else has run on this attach: the first `spawn` or `workspace` command
+ *   closes it for good, and when it settles the session's processes are
+ *   killed and its workspace disposed (see `SessionMachine.provision`).
  * - **Loss.** `signal` is the link's: aborted once the link is lost. A
  *   `spawn`'s own `signal` aborting kills the session's processes.
  * - **Frozen state.** The brand freezes the machine, so everything that
  *   changes (the link, its loss) is read through closures and getters, never
  *   stored in a property.
  */
+import type { WorkspaceMachine } from 'harness-world-hands/runtime';
 import type { CacheDir, CacheFile, FenceToken, MachineSpawn, MachineTail, SessionMachine } from 'harness-world-process';
-import { checkSpawnEnv } from './env-check.ts';
+import { checkProvisionEnv, checkSpawnEnv } from './env-check.ts';
 import { RemoteMachine, fencedToken, type RemoteMachineOptions } from './env.ts';
 import type { RelayLink } from './relay/dial.ts';
 import { ustar } from './tar.ts';
@@ -34,6 +40,8 @@ export interface MachineParts {
   fence: FenceToken | undefined;
   /** `/workspace`. */
   root: string;
+  /** The id of the Drive at `root` (the `hw.sandbox` record's). */
+  driveId?: string;
   dirs: Readonly<Record<CacheDir, string>>;
   /**
    * The workspace's command limit, invocation clamp and flush mode
@@ -73,11 +81,38 @@ export function sessionMachine(parts: MachineParts): Omit<SessionMachine, 'brand
   const fenced = fencedToken(fence);
   const still = parts.mutable;
   const mutable = () => fenced && (still ? still() : true);
+  /** Something ran on this attach (a spawn, a `workspace` command): `provision` is closed. */
+  let started = false;
+  /** `provision`'s `fn` is running: nothing else may start. */
+  let provisioning = false;
+  const workspaceOf = (checkEnv: (env: Readonly<Record<string, string>> | undefined) => void) =>
+    new RemoteMachine({ link, root: parts.root, fence, ...parts.workspaceOptions, ...(still ? { mutable: still } : {}), checkEnv });
+  const workspace = workspaceOf((env) => {
+    if (provisioning) throw new Error('harness-sandbox: a workspace command refused: the workspace is being provisioned (SessionMachine.provision)');
+    checkSpawnEnv(env);
+    started = true;
+  });
   return {
     sessionId: parts.sessionId,
     fence,
     root: parts.root,
-    workspace: new RemoteMachine({ link, root: parts.root, fence, ...parts.workspaceOptions, ...(still ? { mutable: still } : {}) }),
+    ...(parts.driveId !== undefined ? { driveId: parts.driveId } : {}),
+    workspace,
+    async provision<T>(fn: (workspace: WorkspaceMachine) => Promise<T>): Promise<T> {
+      if (started) throw new TypeError('harness-sandbox: provision refused: something already ran on this attach (a spawn or a workspace command), and a credential in a command env could be read by it; provision before anything else');
+      if (provisioning) throw new TypeError('harness-sandbox: provision refused: it is already running on this attach');
+      if (!mutable()) throw unfenced('provision');
+      provisioning = true;
+      const own = workspaceOf(checkProvisionEnv);
+      try {
+        return await fn(own);
+      } finally {
+        own.dispose();
+        provisioning = false;
+        // The helper carried the values, and a command may have left something running: neither outlives provisioning.
+        link.killSession('SIGKILL');
+      }
+    },
     dirs: Object.freeze({ ...parts.dirs }),
     signal: link.signal,
     modelUrl: parts.modelUrl,
@@ -86,7 +121,9 @@ export function sessionMachine(parts: MachineParts): Omit<SessionMachine, 'brand
     ...(parts.notes?.length && parts.notesKey !== undefined ? { notesKey: parts.notesKey } : {}),
     async spawn(options: MachineSpawn) {
       if (!mutable()) throw unfenced('spawn');
+      if (provisioning) throw new Error('harness-sandbox: spawn refused: the workspace is being provisioned (SessionMachine.provision)');
       checkSpawnEnv(options.env, process.env, parts.modelKey);
+      started = true;
       if (options.signal?.aborted) throw options.signal.reason ?? new Error('harness-sandbox: spawn aborted');
       const proc = await link.spawn({ command: options.command, args: options.args, cwd: options.cwd ?? parts.root, env: options.env, ...(options.isolatedCommands ? { isolatedCommands: true } : {}) });
       const signal = options.signal;

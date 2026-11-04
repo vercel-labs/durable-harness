@@ -88,6 +88,15 @@ describe('drills on the session sandbox', () => {
     expect(isSessionDrill({ at: 'tool', kind: 'process' })).toBe(false);
   });
 
+  it("a process crash at 'sandbox' also lands in a sandbox harness's prepare run; the parked and session kinds don't", () => {
+    expect(chaosMatches({ at: 'sandbox' }, 'sandbox.prepare')).toBe(true);
+    expect(chaosMatches({ at: 'sandbox', kind: 'process' }, 'sandbox.prepare')).toBe(true);
+    expect(chaosMatches({ at: 'sandbox', kind: 'sandbox-command' }, 'sandbox.prepare')).toBe(false);
+    expect(chaosMatches({ at: 'sandbox', kind: 'relay-drop' }, 'sandbox.prepare')).toBe(false);
+    expect(chaosMatches({ at: 'tool' }, 'sandbox.prepare')).toBe(false);
+    expect(chaosMatches({ at: 'any' }, 'sandbox.prepare')).toBe(false);
+  });
+
   it('D1: a stopped VM mid-tool is fired afterMs into the step by the drive\'s target, recorded, and the drive goes on', async () => {
     const fired: Drill[] = [];
     const { sessions, sessionId, done } = await session(drilled(fired, []));

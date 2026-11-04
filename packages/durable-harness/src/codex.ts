@@ -80,3 +80,5 @@ export function codex(options: CodexOptions): Agent {
 
 /** The Codex version the sandbox image pins (the binary lives in the VM image, not on this machine). */
 export { CODEX_VERSION } from 'harness-world-codex';
+/** `codex({ prepare })`'s hook and what it gets. */
+export type { DriveToPrepare, PrepareDrive } from 'harness-world-process';

@@ -92,7 +92,10 @@ Choose your harness and framework in the
   [Codex](https://vercel.com/docs/agent-harnesses/codex):
   `durable-harness/claude-code` and `durable-harness/codex`. They run only in
   the session's own Vercel Sandbox, never in a shared Function
-  ([why](https://vercel.com/docs/agent-harnesses/security)).
+  ([why](https://vercel.com/docs/agent-harnesses/security)). Their `prepare`
+  option sets up a session's Drive (a repository, its install) before the
+  CLI starts, once per Drive, with a credential allowed in its commands' env
+  ([how](../harness-claude-code/README.md#preparing-the-drive)).
 
 Model-chosen commands and files run on a virtual workspace (`virtual()`) or
 in the session's own Vercel Sandbox (`sandbox()`), never on the machine that

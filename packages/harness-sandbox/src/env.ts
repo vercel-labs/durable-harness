@@ -17,7 +17,8 @@
  *   are not.
  * - **The env.** A command's `env` passes `checkSpawnEnv` first (§3.1's rules
  *   and the `process.env` equality rule), as every spawn's does: a `TypeError`
- *   naming the key.
+ *   naming the key. `SessionMachine.provision`'s workspace passes only the
+ *   structural rules (`checkProvisionEnv`), before anything else runs.
  * - **Durable, not transactional.** A Drive keeps what a call wrote, even a
  *   call a crash cut off: so there is no `checkpoint`, `diff` or `rollback`
  *   here (they are the in-memory machine's, for the document-backed
@@ -88,6 +89,12 @@ export interface RemoteMachineOptions {
   flush?: 'each' | 'manual';
   /** How long a file operation waits for its answer. Default 60 s; at most 2^31 - 1 ms. */
   callTimeoutMs?: number;
+  /**
+   * Runs before a command is sent, with its `env`: throws to refuse it.
+   * Default `checkSpawnEnv` (every rule). The session machine's own: the same
+   * rules for `workspace`, the structural ones for `provision`'s workspace.
+   */
+  checkEnv?: (env: Readonly<Record<string, string>> | undefined) => void;
 }
 
 /** Whether a token lets an attach mutate the VM: present and still behind the World's fence (§5.4). */
@@ -165,6 +172,7 @@ export class RemoteMachine implements WorkspaceMachine {
   readonly #timeLeft: (() => number | undefined) | undefined;
   readonly #flushEach: boolean;
   readonly #callTimeoutMs: number;
+  readonly #checkEnv: (env: Readonly<Record<string, string>> | undefined) => void;
   #disposed = false;
 
   constructor(options: RemoteMachineOptions) {
@@ -176,6 +184,7 @@ export class RemoteMachine implements WorkspaceMachine {
     this.#timeLeft = options.timeLeft;
     this.#flushEach = (options.flush ?? 'each') === 'each';
     this.#callTimeoutMs = timerMs(options.callTimeoutMs, 60_000, 'callTimeoutMs');
+    this.#checkEnv = options.checkEnv ?? ((env) => checkSpawnEnv(env));
   }
 
   /** The link is gone (or the machine was disposed): get a new machine from the session (re-attach). */
@@ -265,7 +274,7 @@ export class RemoteMachine implements WorkspaceMachine {
   async #exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
     if (typeof command !== 'string' || command.includes('\0')) throw new TypeError('harness-sandbox: a command must be a string without NUL');
     if (command.length > LIMITS.frameBytes / 2) throw error('E2BIG', 'harness-sandbox: a command over 512 KiB');
-    checkSpawnEnv(options.env);
+    this.#checkEnv(options.env);
     const args = options.args ?? [];
     if (!Array.isArray(args) || !args.every((a) => typeof a === 'string' && !a.includes('\0'))) throw new TypeError('harness-sandbox: exec args must be strings without NUL');
     const stdin = options.stdin === undefined ? undefined : new TextEncoder().encode(options.stdin);

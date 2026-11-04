@@ -602,6 +602,7 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
             fence: token,
             mutable: () => fencedToken(a.fence),
             root,
+            ...(a.drive?.driveId ? { driveId: a.drive.driveId } : {}),
             dirs: vmDirs(layout?.cacheRoot ?? CACHE_ROOT),
             // A command ends before the invocation does (§5.6).
             workspaceOptions: { ...(spec.commandTimeoutMs ? { timeoutMs: spec.commandTimeoutMs } : {}), timeLeft: () => deadline - Date.now() - INVOCATION_MARGIN_MS },
