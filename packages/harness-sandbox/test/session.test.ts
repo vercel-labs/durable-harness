@@ -809,7 +809,7 @@ describe('the session factory: the network policy', () => {
     expect(l.lines.join('\n')).not.toContain('sk-live');
   });
 
-  it('maps a full policy: rules and subnets as given, the forced 403s only with a wildcard that covers the host, and only for hosts it does not name', () => {
+  it('maps a full policy: rules and subnets as given, the forced 403s only with * and only for hosts it does not name', () => {
     const env = { VERCEL_URL: 'app.example.com' };
     expect(networkPolicy(brokered(), env)).toEqual(brokered());
     const open = networkPolicy({ allow: { '*': [], 'ai-gateway.vercel.sh': [{ transform: [{ headers: { authorization: SECRET } }] }] } }, env) as { allow: Record<string, unknown[]> };
@@ -838,17 +838,24 @@ describe('the session factory: pure parts', () => {
     expect(a.startsWith('dh-probe-')).toBe(false);
   });
 
-  it('a wildcard that covers a forced host gets its 403 too, unless the policy names the host exactly', () => {
+  it('a wildcard short of * passes as written: the forced 403s come only with *', () => {
     const env = { VERCEL_URL: 'app-git-x.vercel.app' };
-    const forced = [{ response: { statusCode: 403 } }];
     const p = (allow: string[] | Record<string, unknown[]>) => (networkPolicy({ allow } as never, env) as { allow: Record<string, unknown[]> }).allow;
-    expect(p(['*.vercel.sh'])).toEqual({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': forced });
-    expect(p(['api.*.com'])).toEqual({ 'api.*.com': [], 'api.vercel.com': forced });
-    expect(p(['*.*'])).toMatchObject({ 'ai-gateway.vercel.sh': forced, 'api.vercel.com': forced, 'app-git-x.vercel.app': forced });
-    expect(p(['*.VERCEL.app'])).toMatchObject({ 'app-git-x.vercel.app': forced });
-    expect(p({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': [] })).toEqual({ '*.vercel.sh': [], 'ai-gateway.vercel.sh': [] });
-    expect(p(['*.example.com', 'github.com', 'example.*'])).toEqual({ '*.example.com': [], 'github.com': [], 'example.*': [] });
-    expect(p(['vercel.sh'])).toEqual({ 'vercel.sh': [] });
+    expect(p(['*.vercel.app', 'api.*.example.com'])).toEqual({ '*.vercel.app': [], 'api.*.example.com': [] });
+    expect(p({ '*.vercel.sh': [] })).toEqual({ '*.vercel.sh': [] });
+  });
+
+  it('collects every value that may be a credential, and its JSON-escaped form', () => {
+    const secrets = policySecrets({
+      allow: {
+        'api.example.com': [{ transform: [{ headers: { authorization: 'tok"en' } }] }],
+        'broker.example.com': [{ forwardURL: 'https://u:SECRETURL@proxy.example.com/p' }],
+        'blocked.example.com': [{ response: { statusCode: 403, body: 'SECRETBODY', contentType: 'text/plain' } }],
+      },
+    } as never);
+    expect(secrets).toEqual(expect.arrayContaining(['tok"en', 'tok\\"en', 'https://u:SECRETURL@proxy.example.com/p', 'SECRETBODY']));
+    const err = redactedError(Object.assign(new Error('400 body {"authorization":"tok\\"en","forwardURL":"https://u:SECRETURL@proxy.example.com/p","body":"SECRETBODY"}'), { status: 400 }), secrets) as Error;
+    for (const v of ['tok', 'SECRETURL', 'SECRETBODY']) expect(err.message).not.toContain(v);
   });
 
   it('maps the network option: allow-all is custom mode with the forced 403s; deny-all and an allow list pass', () => {

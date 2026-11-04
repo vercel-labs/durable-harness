@@ -243,8 +243,8 @@ const FORCED_403 = Object.freeze([Object.freeze({ response: Object.freeze({ stat
  * A policy as the platform takes it: `allow-all` is custom mode with the
  * forced 403s (the VM's open network, less the hosts it holds no credential
  * for); a custom policy's domains in the record form, and, when it allows
- * every other domain (`*`) or a wildcard that covers one of those hosts, the
- * forced 403s for the hosts it doesn't name itself. Rules and subnets pass as given.
+ * every other domain (`*`), the forced 403s for the hosts it doesn't name
+ * itself. Rules and subnets pass as given.
  */
 export function networkPolicy(network: SandboxNetworkValue, env?: Readonly<Record<string, string | undefined>>): SandboxNetworkPolicy {
   if (network === 'deny-all') return 'deny-all';
@@ -253,36 +253,37 @@ export function networkPolicy(network: SandboxNetworkValue, env?: Readonly<Recor
   const rules: Record<string, unknown[]> = Array.isArray(given.allow)
     ? Object.fromEntries((given.allow as readonly string[]).map((d) => [d, []]))
     : Object.fromEntries(Object.entries((given.allow ?? {}) as Readonly<Record<string, readonly unknown[]>>).map(([d, r]) => [d, [...r]]));
-  // A forced host a wildcard opens (`*`, `*.vercel.sh`, `ai-gateway.*.sh`) is answered 403 unless the policy names it exactly.
-  const patterns = Object.keys(rules).filter((d) => d.includes('*'));
-  const forced = Object.fromEntries(forcedHosts(env).filter((h) => !(h in rules) && patterns.some((d) => wildcardCovers(d, h))).map((h) => [h, FORCED_403]));
+  const forced = '*' in rules ? Object.fromEntries(forcedHosts(env).filter((h) => !(h in rules)).map((h) => [h, FORCED_403])) : {};
   const subnets = given.subnets ? { subnets: { ...(given.subnets.allow ? { allow: [...given.subnets.allow] } : {}), ...(given.subnets.deny ? { deny: [...given.subnets.deny] } : {}) } } : {};
   return { allow: { ...forced, ...rules } as never, ...subnets } as SandboxNetworkPolicy;
 }
 
 /**
- * Whether the wildcard domain `pattern` may match `host`. Each `*` is taken to
- * match one or more labels, wider than the firewall may match it, so a forced
- * 403 is never left out for a host the policy opens.
+ * Every value a policy carries that may be a credential (its transforms' and
+ * its responses' header values, a response's body, a `forwardURL`), each also
+ * as JSON escapes it (an API error may echo the request): what an error or a
+ * log line must never carry.
  */
-function wildcardCovers(pattern: string, host: string): boolean {
-  if (pattern === '*') return true;
-  const label = (l: string) => (l === '*' ? '[^.]+(?:\\.[^.]+)*' : l.replace(/[.+?^${}()|[\]\\-]/g, '\\$&'));
-  return new RegExp(`^${pattern.split('.').map(label).join('\\.')}$`, 'i').test(host);
-}
-
-/** Every header value a policy sets (its transforms' and its responses'): what an error or a log line must never carry. */
 export function policySecrets(policy: SandboxNetworkPolicy): string[] {
   if (typeof policy !== 'object' || policy === null || Array.isArray(policy.allow) || !policy.allow) return [];
   const out = new Set<string>();
+  const one = (v: unknown) => {
+    if (typeof v !== 'string' || v.length === 0) return;
+    out.add(v);
+    const escaped = JSON.stringify(v).slice(1, -1);
+    if (escaped !== v) out.add(escaped);
+  };
   const add = (headers: unknown) => {
     if (typeof headers !== 'object' || headers === null) return;
-    for (const v of Object.values(headers)) if (typeof v === 'string' && v.length > 0) out.add(v);
+    for (const v of Object.values(headers)) one(v);
   };
   for (const rules of Object.values(policy.allow)) {
     for (const rule of rules ?? []) {
-      for (const t of (rule as { transform?: readonly { headers?: unknown }[] }).transform ?? []) add(t?.headers);
-      add((rule as { response?: { headers?: unknown } }).response?.headers);
+      const r = rule as { transform?: readonly { headers?: unknown }[]; response?: { headers?: unknown; body?: unknown }; forwardURL?: unknown };
+      for (const t of r.transform ?? []) add(t?.headers);
+      add(r.response?.headers);
+      one(r.response?.body);
+      one(r.forwardURL);
     }
   }
   // The longest first, so a value that contains another is hidden whole.
