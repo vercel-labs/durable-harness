@@ -87,3 +87,5 @@ export type {
   SessionProcess,
 } from './environment.ts';
 export { gatewayModelOptions, gatewayModelResult, ResponseCapture } from './agent-runs.ts';
+export { gatewayModelsCatalog, gatewayTokenPrice } from './gateway-models.ts';
+export type { GatewayModelInfo } from './gateway-models.ts';
