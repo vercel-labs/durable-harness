@@ -77,6 +77,12 @@ lists, and containers or accessors for an existing agent are supported.
 For custom factories or effect-only agent registration, list the modules
 explicitly: `withDurableHarness(nextConfig, { agents: ['lib/agent.ts'] })`.
 
+A queue message for a session whose agent the flow route has not made (a
+module it does not load, or an instance still on the previous deployment)
+comes back, later each time, for a bounded number of deliveries. Past that, it is acknowledged with an error that
+names the run, and the session is left as it is: its next message, or a
+World's recovery, drives it again.
+
 Choose your harness and framework in the
 [agent harnesses docs](https://vercel.com/docs/agent-harnesses).
 

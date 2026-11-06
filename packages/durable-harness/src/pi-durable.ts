@@ -51,7 +51,7 @@ import { NOT_RUN, sandboxEnvBuilder } from 'pi-world/sandbox';
 import { CodingTools, MEMORY_NOTE, virtualEnvBuilder } from 'pi-world/workspace';
 import { waitUntil } from './agent.ts';
 import { resolveEnvironment } from './environments.ts';
-import { register } from './registry.ts';
+import { register, unownedDelivery } from './registry.ts';
 import { publicSandboxConfig } from './sandbox-harness.ts';
 import { getWorld } from './world.ts';
 import { isWorkspace, sandbox, type SandboxOptions, type SandboxWorkspace, virtual, type VirtualOptions, type VirtualWorkspace } from './workspace.ts';
@@ -259,8 +259,11 @@ export function resumeWith<O extends Opener>(open: O, options: ResumeOptions = {
         return open(storage);
       };
       const handled = d.route(reopen, options.maxDriveMs !== undefined ? { maxDriveMs: options.maxDriveMs } : {})(message, meta);
-      // Not a pi-durable message (another harness's, whose module has not loaded here): it comes back.
-      if (!handled) return { timeoutSeconds: 5 };
+      // Not a pi-durable message (another harness's, whose module has not loaded here): it comes back, a bounded number of times.
+      if (!handled) {
+        const runId = (message as { runId?: unknown } | undefined)?.runId;
+        return unownedDelivery(meta, { why: `a queue message given to pi-durable agent '${name}' is not a pi-durable session's`, runId, quiet: true });
+      }
       return (await handled) ?? undefined;
     },
   });

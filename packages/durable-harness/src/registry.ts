@@ -5,6 +5,12 @@ import { FLOW_ROUTE, QUEUE_PREFIX } from './routing.ts';
 /** What a queue delivery carries besides the message. */
 export interface QueueMeta {
   attempt: number;
+  /**
+   * Every delivery of this message, from 1, including `{ timeoutSeconds }`
+   * redeliveries (whose `attempt` some Worlds start over), when the World
+   * reports it.
+   */
+  deliveryCount?: number;
   queueName: string;
   messageId: string;
 }
@@ -84,34 +90,102 @@ async function workflowNameOf(world: World, runId: string): Promise<string | und
 }
 
 /**
+ * How many deliveries of one queue message that no agent in this process
+ * owns are redelivered before the message is let go. Such a message may be
+ * waiting for an instance where its agent is registered (a rolling deploy, a
+ * module the flow route has not loaded yet, another process on the same
+ * World), so it comes back, later each time (`UNOWNED_FIRST_DELAY_SECONDS`,
+ * doubling up to `UNOWNED_MAX_DELAY_SECONDS`): together, a window of minutes,
+ * long enough for a rollout. Past it, the message is acknowledged with an
+ * error logged, and its session is left as it is (not failed: no agent here
+ * can write to it): its next message, or a World's recovery, drives it again.
+ */
+export const MAX_UNOWNED_DELIVERIES = 16;
+/** The first redelivery's delay for a message no agent here owns. */
+export const UNOWNED_FIRST_DELAY_SECONDS = 5;
+/** The longest delay between two deliveries of a message no agent here owns. */
+export const UNOWNED_MAX_DELAY_SECONDS = 60;
+
+/** Deliveries counted here, for a World that reports no count (`unownedDelivery`). */
+const unownedCounts = new Map<string, number>();
+
+const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 1;
+
+export interface UnownedDelivery {
+  /** What the warning says happened (`no agent in this process owns a queue message`). */
+  why: string;
+  runId?: unknown;
+  workflowName?: string | undefined;
+  /** No warning per redelivery (the one when it is let go is still logged). */
+  quiet?: boolean;
+}
+
+/**
+ * A delivery no agent here owns: redelivered later (`{ timeoutSeconds }`),
+ * at most `MAX_UNOWNED_DELIVERIES` times, then acknowledged (`undefined`)
+ * with one error logged.
+ *
+ * The count is the World's: `deliveryCount`, else `attempt`. A World that
+ * reports no `deliveryCount` may re-enqueue a `{ timeoutSeconds }` result as
+ * a new message whose `attempt` starts over (world-vercel), so there the
+ * delivery fails instead, with a `retryAfter`, and the queue redelivers the
+ * same message at the next `attempt`. With neither, this process counts.
+ */
+export function unownedDelivery(meta: QueueMeta, { why, runId, workflowName, quiet }: UnownedDelivery): { timeoutSeconds: number } | undefined {
+  const key = `${meta.queueName}\0${typeof runId === 'string' ? runId : meta.messageId}`;
+  let delivery: number;
+  if (isCount(meta.deliveryCount)) delivery = meta.deliveryCount;
+  else if (isCount(meta.attempt)) delivery = meta.attempt;
+  else {
+    delivery = (unownedCounts.get(key) ?? 0) + 1;
+    unownedCounts.delete(key);
+    unownedCounts.set(key, delivery);
+    while (unownedCounts.size > 4096) unownedCounts.delete(unownedCounts.keys().next().value as string);
+  }
+  const fields = { queueName: meta.queueName, messageId: meta.messageId, runId, workflowName, delivery };
+  if (delivery >= MAX_UNOWNED_DELIVERIES) {
+    unownedCounts.delete(key);
+    console.error(
+      `[durable-harness] ${why} on ${delivery} deliveries: it is acknowledged and not redelivered. Its session is left as it is: its next message, or a recovery, drives it again. Make sure the flow route loads the module that makes the agent (withDurableHarness's \`agents\`, or an import in the route).`,
+      fields
+    );
+    return undefined;
+  }
+  const timeoutSeconds = Math.min(UNOWNED_FIRST_DELAY_SECONDS * 2 ** (delivery - 1), UNOWNED_MAX_DELAY_SECONDS);
+  if (!quiet) console.warn(`[durable-harness] ${why}; it is redelivered in ${timeoutSeconds} s (delivery ${delivery} of ${MAX_UNOWNED_DELIVERIES})`, fields);
+  if (!isCount(meta.deliveryCount) && isCount(meta.attempt)) {
+    throw Object.assign(new Error(`durable-harness: ${why} (delivery ${delivery} of ${MAX_UNOWNED_DELIVERIES}); redeliver it in ${timeoutSeconds} s`), { retryAfter: timeoutSeconds });
+  }
+  return { timeoutSeconds };
+}
+
+/**
  * One queue message, to the agent whose session it is. With one agent on
  * this World, that one (a World's recovery delivery for another agent's run,
  * whose module has not loaded yet, comes back later); with several, the one
  * that claims it, else the one whose harness the run's `workflowName` names
  * (in any version of durable-harness, or the older `harness-world` form).
+ * A message no agent here owns comes back a bounded number of times
+ * (`unownedDelivery`).
  */
 export async function dispatch(world: World, message: unknown, meta: QueueMeta): Promise<unknown> {
   const here = registered().filter((a) => a.world === undefined || a.world === world);
-  if (here.length === 0) {
-    console.warn('[durable-harness] a queue message arrived before any agent was made in this process; it is redelivered in 5 s', { queueName: meta.queueName });
-    return { timeoutSeconds: 5 };
-  }
+  const runId = (message as { runId?: unknown } | undefined)?.runId;
+  if (here.length === 0) return unownedDelivery(meta, { why: 'a queue message arrived before any agent was made in this process', runId });
   const recoveryOf = meta.queueName.startsWith(RECOVERY) ? meta.queueName.slice(QUEUE_PREFIX.length) : undefined;
   if (here.length === 1) {
     const [only] = here as [Registered];
-    if (recoveryOf !== undefined && !sameHarness(recoveryOf, only.workflowName) && !only.claims?.(message, meta)) return { timeoutSeconds: 5 };
+    if (recoveryOf !== undefined && !sameHarness(recoveryOf, only.workflowName) && !only.claims?.(message, meta)) {
+      return unownedDelivery(meta, { why: "a World's recovery delivery is for another agent's run", runId, workflowName: recoveryOf, quiet: true });
+    }
     return only.consume(message, meta);
   }
   // A claim settles it when one agent makes it (several pi-durable agents all claim Pi's wakes: the run decides).
   const claimants = here.filter((a) => a.claims?.(message, meta));
   if (claimants.length === 1) return claimants[0]!.consume(message, meta);
-  const runId = (message as { runId?: unknown } | undefined)?.runId;
   const name = recoveryOf ?? (typeof runId === 'string' ? await workflowNameOf(world, runId) : undefined);
   const owner = (claimants.length > 1 ? claimants : here).find((a) => sameHarness(name, a.workflowName));
-  if (!owner) {
-    console.warn('[durable-harness] no agent in this process owns a queue message; it is redelivered in 5 s', { queueName: meta.queueName, runId, workflowName: name });
-    return { timeoutSeconds: 5 };
-  }
+  if (!owner) return unownedDelivery(meta, { why: 'no agent in this process owns a queue message', runId, workflowName: name });
   return owner.consume(message, meta);
 }
 

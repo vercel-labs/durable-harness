@@ -8,8 +8,8 @@ import { legacyWorkflowNameFor, workflowNameFor } from 'harness-world/names';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { kernelAgent } from '../src/agent.ts';
 import { defineDoc, DocConflict, durableAgent, hostToolIO, type HostToolIO } from '../src/index.ts';
-import { chatRoute as piChatRoute } from '../src/pi-durable.ts';
-import { dispatch, register } from '../src/registry.ts';
+import { chatRoute as piChatRoute, resumeWith } from '../src/pi-durable.ts';
+import { dispatch, MAX_UNOWNED_DELIVERIES, register, registered, UNOWNED_MAX_DELAY_SECONDS } from '../src/registry.ts';
 import { QUEUE_PREFIX } from '../src/routing.ts';
 import { docTools, readWorkspace, workspaceManifest, workspaceTools } from '../src/tools.ts';
 import { getWorld } from '../src/world.ts';
@@ -200,7 +200,7 @@ describe('dispatch', () => {
       register({ name, workflowName: workflowNameFor(name), world, consume: async (message) => void seen.push(`${name}:${(message as { runId: string }).runId}`) });
       await Promise.resolve();
     }
-    const meta = { attempt: 1, queueName: '__harness_wkf_workflow_session', messageId: 'm' };
+    const meta = { attempt: 1, deliveryCount: 1, queueName: '__harness_wkf_workflow_session', messageId: 'm' };
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await dispatch(world, { runId: 'r-legacy' }, meta);
     await dispatch(world, { runId: 'r-older' }, meta);
@@ -210,6 +210,81 @@ describe('dispatch', () => {
     await dispatch(world, { runId: 'r-y' }, { ...meta, queueName: '__harness_wkf_workflow_workflow//durable-harness@0.0.0-older//disp-b' });
     expect(seen).toEqual(['disp-b:r-legacy', 'disp-a:r-older', 'disp-a:r-x', 'disp-b:r-y']);
     vi.restoreAllMocks();
+  });
+});
+
+describe('dispatch of a message no agent here owns', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A World with one agent of its own that owns no run (its `runs.get` names another harness); nothing else, so a write would throw. */
+  const worldWithOther = async (name: string) => {
+    const world = { runs: { get: async () => ({ workflowName: workflowNameFor('someone-else') }) } } as never;
+    for (const n of [name, `${name}-2`]) {
+      register({ name: n, workflowName: workflowNameFor(n), world, consume: async () => 'consumed' });
+      await Promise.resolve();
+    }
+    return world;
+  };
+  const meta = (delivery: Partial<{ attempt: number; deliveryCount: number }>, messageId = 'm') =>
+    ({ queueName: '__harness_wkf_workflow_session', messageId, ...delivery }) as { attempt: number; queueName: string; messageId: string };
+
+  it('is redelivered, later each time, while under the limit, and acknowledged with one error at the limit, the run left as it is', async () => {
+    const world = await worldWithOther('unowned-a');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const delays: unknown[] = [];
+    for (let n = 1; n < MAX_UNOWNED_DELIVERIES; n++) delays.push(await dispatch(world, { runId: 'r-gone' }, meta({ attempt: 1, deliveryCount: n })));
+    expect(delays.slice(0, 4)).toEqual([{ timeoutSeconds: 5 }, { timeoutSeconds: 10 }, { timeoutSeconds: 20 }, { timeoutSeconds: 40 }]);
+    expect(delays.at(-1)).toEqual({ timeoutSeconds: UNOWNED_MAX_DELAY_SECONDS });
+    expect(warn).toHaveBeenCalledTimes(MAX_UNOWNED_DELIVERIES - 1);
+    expect(error).not.toHaveBeenCalled();
+
+    // The last delivery: acknowledged (nothing to redeliver), logged once with the run and the agent it names.
+    expect(await dispatch(world, { runId: 'r-gone' }, meta({ attempt: 1, deliveryCount: MAX_UNOWNED_DELIVERIES }))).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![0]).toMatch(/acknowledged and not redelivered/);
+    expect(error.mock.calls[0]![1]).toMatchObject({ runId: 'r-gone', workflowName: workflowNameFor('someone-else'), delivery: MAX_UNOWNED_DELIVERIES });
+  });
+
+  it("fails the delivery with a retryAfter on a World that counts only `attempt` (a `{ timeoutSeconds }` there is a new message), and acknowledges at the limit", async () => {
+    const world = await worldWithOther('unowned-b');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(dispatch(world, { runId: 'r-gone' }, meta({ attempt: 1 }))).rejects.toMatchObject({ retryAfter: 5 });
+    await expect(dispatch(world, { runId: 'r-gone' }, meta({ attempt: 3 }))).rejects.toMatchObject({ retryAfter: 20 });
+    expect(await dispatch(world, { runId: 'r-gone' }, meta({ attempt: MAX_UNOWNED_DELIVERIES }))).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![1]).toMatchObject({ runId: 'r-gone' });
+  });
+
+  it('is still bounded when the World reports no count: this process counts the deliveries of the message', async () => {
+    const world = await worldWithOther('unowned-c');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const results: unknown[] = [];
+    for (let n = 1; n <= MAX_UNOWNED_DELIVERIES; n++) results.push(await dispatch(world, { runId: 'r-uncounted' }, meta({}, `m-${n}`)));
+    expect(results[0]).toEqual({ timeoutSeconds: 5 });
+    expect(results.slice(0, -1).every((r) => typeof (r as { timeoutSeconds?: unknown }).timeoutSeconds === 'number')).toBe(true);
+    expect(results.at(-1)).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![1]).toMatchObject({ runId: 'r-uncounted', delivery: MAX_UNOWNED_DELIVERIES });
+    // The count starts over for a later message of the run.
+    expect(await dispatch(world, { runId: 'r-uncounted' }, meta({}))).toEqual({ timeoutSeconds: 5 });
+  });
+
+  it('bounds the message a pi-durable agent is given that is not a pi-durable session\'s, too', async () => {
+    const world = { runs: { get: async () => undefined } } as never;
+    resumeWith(async () => {
+      throw new Error('never opened');
+    }, { name: 'unowned-pi', world });
+    await Promise.resolve();
+    const agent = registered().find((a) => a.name === 'unowned-pi')!;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const m = { queueName: '__harness_wkf_workflow_session', messageId: 'm', attempt: 1 };
+    expect(await agent.consume({ runId: 'r-not-pi' }, { ...m, deliveryCount: 1 })).toEqual({ timeoutSeconds: 5 });
+    expect(await agent.consume({ runId: 'r-not-pi' }, { ...m, deliveryCount: MAX_UNOWNED_DELIVERIES })).toBeUndefined();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![1]).toMatchObject({ runId: 'r-not-pi' });
   });
 });
 
