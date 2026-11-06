@@ -336,8 +336,12 @@ export function virtualEnv(workspace?: VirtualWorkspace | VirtualOptions): EnvBu
  * (its Drive, the VM time granted against `sandbox({ budget: { vmSeconds }
  * })`) is in its log. A call whose VM could not be attached answers
  * `NOT_RUN` ("Not run: the sandbox is starting, try again"): nothing reached
- * the VM. With this module's `CodingTools`, a call also tells the model when
- * the session's files were lost (a new, empty Drive), once. pi-durable's own
+ * the VM. The VM holds no credential: for the model's commands to call an
+ * API with one, give `sandbox({ network })` a header transform (a callback,
+ * so the token is read per session; see `SandboxNetwork`), or keep the call
+ * in a tool of yours, which runs in the Function. With this module's
+ * `CodingTools`, a call also tells the model when the session's files were
+ * lost (a new, empty Drive), once. pi-durable's own
  * `CodingTools` work on it too. Needs a World storage (`openWorldStorage`)
  * on a World with the in-band writer fence (world-vercel, world-local). A
  * session a public `chatRoute` started boots a VM only with that route's

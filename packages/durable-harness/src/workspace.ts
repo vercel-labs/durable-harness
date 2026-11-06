@@ -263,7 +263,9 @@ export interface SandboxOptions {
    * names the harness sets itself (`PATH`, `HOME`, `ANTHROPIC_*`, `CLAUDE_*`,
    * `CODEX_*`, ...). When it attaches, the driver also refuses any value
    * equal to one of the Function's environment values of 16 characters or
-   * more.
+   * more. For commands that call an API with a credential, set it with a
+   * header transform in `network` (`SandboxNetwork`): the firewall adds it to
+   * the VM's requests, outside the VM.
    */
   env?: Readonly<Record<string, string>>;
   /**
@@ -595,13 +597,13 @@ function checkSandboxEnvVars(env: unknown): Readonly<Record<string, string>> {
   for (const [name, value] of entries) {
     if (!ENV_NAME.test(name)) throw invalid('sandbox', 'env', 'names must be shell variable names', name);
     if (isSecretName(name)) {
-      throw new TypeError(`durable-harness: sandbox({ env }) refuses ${name}: a sandbox holds no secrets. Keep credentials in your Function and use them from a HostTool.`);
+      throw new TypeError(`durable-harness: sandbox({ env }) refuses ${name}: a sandbox holds no secrets. Keep credentials in your Function: use them from a HostTool, or have the Sandbox's firewall add them to the VM's requests with a header transform in sandbox({ network }).`);
     }
     if (RESERVED_NAME.test(name)) throw new TypeError(`durable-harness: sandbox({ env }) refuses ${name}: the harness sets it`);
     if (typeof value !== 'string') throw invalid('sandbox', `env.${name}`, 'must be a string', value);
     const shape = secretValueShape(value);
     // The value is never part of the message: it may be the secret.
-    if (shape) throw new TypeError(`durable-harness: sandbox({ env }) refuses ${name}: its value looks like ${shape}, and a sandbox holds no secrets. Keep credentials in your Function and use them from a HostTool.`);
+    if (shape) throw new TypeError(`durable-harness: sandbox({ env }) refuses ${name}: its value looks like ${shape}, and a sandbox holds no secrets. Keep credentials in your Function: use them from a HostTool, or have the Sandbox's firewall add them to the VM's requests with a header transform in sandbox({ network }).`);
   }
   return Object.freeze(Object.fromEntries(entries)) as Readonly<Record<string, string>>;
 }

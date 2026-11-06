@@ -809,6 +809,35 @@ describe('the session factory: the network policy', () => {
     expect(l.lines.join('\n')).not.toContain('sk-live');
   });
 
+  it("a short header value doesn't hide the cap a refused create names: it is read before the error is redacted", async () => {
+    // The plan allows 3 h; a transform sets a header to "3", which the refusal's "<= 3h" contains.
+    const api = fakeApi({ planCapMs: 3 * 3_600_000 });
+    const l = collect();
+    const network = { allow: { 'api.example.com': [{ transform: [{ headers: { 'x-api-version': '3' } }] }] } };
+    await track(factory(api, { planCapMs: PLAN_CAP_MAX_MS, spec: { network, idleMs: 4 * 60 * 60_000 }, log: l.log })(invocation({ count: 1, fenced: true }).request));
+    // The cap the message names, not the 45 min fallback for a 400 it can't read.
+    expect(l.lines.find((x) => x.startsWith('learned the plan cap'))).toContain(`"planCapMs":${3 * 3_600_000}`);
+    expect(api.vms.get(NAME)!.timeout).toBeGreaterThan(HOBBY_CAP_MS);
+    expect(api.calls.filter((c) => c.startsWith('createSandbox'))).toHaveLength(2);
+  });
+
+  it("a short header value doesn't hide a gone base snapshot: the base is prepared again, and the error that leaves is still redacted", async () => {
+    const api = fakeApi();
+    const l = collect();
+    let bases = 0;
+    // A header value that is a word of the platform's refusal.
+    const network = { allow: { 'api.example.com': [{ transform: [{ headers: { 'x-mode': 'snapshot' } }] }] } };
+    const acquire = factory(api, { spec: { network, image: undefined }, base: async () => ({ snapshot: `snap_base_${++bases}` }), log: l.log });
+    let refused = 0;
+    api.beforeCreateSandbox = () => {
+      if (refused++ === 0) throw Object.assign(new Error('Status code 404 is not ok: snapshot not found'), { response: { status: 404 } });
+    };
+    await track(acquire(invocation({ count: 1, fenced: true }).request));
+    expect(bases).toBe(2);
+    expect(l.lines.some((x) => x.startsWith('the base snapshot is gone'))).toBe(true);
+    expect(l.lines.join('\n')).not.toContain('snapshot not found');
+  });
+
   it('maps a full policy: rules and subnets as given, the forced 403s only with * and only for hosts it does not name', () => {
     const env = { VERCEL_URL: 'app.example.com' };
     expect(networkPolicy(brokered(), env)).toEqual(brokered());

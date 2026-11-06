@@ -497,8 +497,13 @@ function runFailure(err: unknown): 'busy' | 'unanswered' {
   return 'unanswered';
 }
 
+/** Marks a redacted create error whose original said the base snapshot is gone (`snapshotGone`). */
+const SNAPSHOT_GONE: unique symbol = Symbol('harness-sandbox.snapshotGone');
+
 /** The base snapshot is gone (expired, or rebuilt and deleted elsewhere): the create's 404 or 400 naming it. */
 function snapshotGone(err: unknown): boolean {
+  // A redacted error carries the verdict read from its original: redaction may have changed the words this reads.
+  if ((err as { [SNAPSHOT_GONE]?: boolean } | undefined)?.[SNAPSHOT_GONE] === true) return true;
   const e = apiErrorOf(err);
   return (e.status === 404 || e.status === 400) && /snapshot/i.test(`${e.code ?? ''} ${e.message}`);
 }
@@ -902,8 +907,7 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
     const wanted = Math.max(deadline - Date.now(), 0) + spec.idleMs;
     const timeout = Math.min(wanted, cap.ms, budgetLeftMs);
     const make = (t: number) =>
-      api
-        .createSandbox({
+      api.createSandbox({
         name: a.name!,
         region,
         source,
@@ -915,28 +919,33 @@ export function sandboxSession(options: SandboxSessionOptions): AcquireMachine {
         network: network.policy,
         fenceMark: a.fence!.count,
         ...(options.tags ? { tags: options.tags } : {}),
-      })
-        .catch((err: unknown) => {
-          throw redactedError(err, network.secrets);
-        });
+      });
+    // What leaves here is redacted; what is decided here, and by the caller (`snapshotGone`), is read from the original first: a short header value ("0") replaced in the platform's message could hide the cap it names, or the word "snapshot".
+    const redacted = (err: unknown): unknown => {
+      const out = redactedError(err, network.secrets);
+      if (out !== err && typeof out === 'object' && out !== null && snapshotGone(err)) Object.defineProperty(out, SNAPSHOT_GONE, { value: true });
+      return out;
+    };
     try {
       return await make(timeout);
     } catch (err) {
       // A create past the plan's cap (a learned cap the plan no longer has): the cap its message names, else, for any 400, Hobby's (the smallest), once.
-      if (timeout <= HOBBY_CAP_MS) throw err;
+      if (timeout <= HOBBY_CAP_MS) throw redacted(err);
       const named = createCapOf(err);
       const learned = named ?? (apiErrorOf(err).status === 400 ? HOBBY_CAP_MS : undefined);
-      if (learned === undefined || learned >= timeout) throw err;
+      if (learned === undefined || learned >= timeout) throw redacted(err);
       if (named !== undefined) {
         learnCap(named, 'a create past the cap was refused');
-        return make(Math.min(timeout, named));
+        return make(Math.min(timeout, named)).catch((again: unknown) => {
+          throw redacted(again);
+        });
       }
       // A bare 400 may be about something else (a network policy, the source): the cap is learned only once the shorter create succeeds, and a retry that fails the same way leaves it as it was.
       let vm: VmHandle;
       try {
         vm = await make(Math.min(timeout, learned));
       } catch {
-        throw err;
+        throw redacted(err);
       }
       learnCap(learned, 'a create past 45 min was refused, and one within it made');
       return vm;
