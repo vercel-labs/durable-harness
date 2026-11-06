@@ -783,17 +783,23 @@ export function parseStrictJson(bytes: Uint8Array): unknown {
   return out;
 }
 
-/** The Gateway's own cost figure for a response (P0.18: `provider_metadata.gateway`, in the JSON body or the stream's last events). */
+/**
+ * What a response cost (P0.18: `provider_metadata.gateway`, in the JSON body or the stream's last events): the Gateway's
+ * own figure, or `marketCost` when that is higher. With a provider key (BYOK) the Gateway bills `0` and the provider
+ * bills the key; `marketCost` is that spend, and it is still model spend the caps are for.
+ */
 const GATEWAY_COST = /"gatewayCost"\s*:\s*"?(\d+(?:\.\d+)?)"?/g;
 const PLAIN_COST = /"gateway"\s*:\s*\{[^]*?"cost"\s*:\s*"?(\d+(?:\.\d+)?)"?/g;
+const MARKET_COST = /"marketCost"\s*:\s*"?(\d+(?:\.\d+)?)"?/g;
 function costOf(text: string): number | undefined {
   const last = (re: RegExp) => {
     let found: number | undefined;
     for (const m of text.matchAll(re)) found = Number(m[1]);
-    return found;
+    return found !== undefined && Number.isFinite(found) && found >= 0 ? found : undefined;
   };
-  const usd = last(GATEWAY_COST) ?? last(PLAIN_COST);
-  return usd !== undefined && Number.isFinite(usd) && usd >= 0 ? usd : undefined;
+  const billed = last(GATEWAY_COST) ?? last(PLAIN_COST);
+  const market = last(MARKET_COST);
+  return billed === undefined ? market : market === undefined ? billed : Math.max(billed, market);
 }
 
 /** What a response showed of itself: its first and last text (for `usage` and the cost), and how many bytes streamed. */

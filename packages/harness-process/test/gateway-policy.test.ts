@@ -19,7 +19,7 @@ afterEach(async () => {
 const CREDENTIAL = 'fn-credential-do-not-leak';
 
 /** A stand-in for the Gateway: records every request, answers like `/v1/messages` with the Gateway's cost metadata (P0.18). */
-async function gateway(options: { cost?: string; status?: number } = {}) {
+async function gateway(options: { cost?: string; market?: string; status?: number } = {}) {
   const seen: { method?: string; url?: string; headers: IncomingHttpHeaders; body: string }[] = [];
   const server = createServer(async (req, res) => {
     let body = '';
@@ -27,7 +27,7 @@ async function gateway(options: { cost?: string; status?: number } = {}) {
     seen.push({ method: req.method, url: req.url, headers: req.headers, body });
     res.writeHead(options.status ?? 200, { 'content-type': 'text/event-stream', 'set-cookie': 'a=b', 'x-internal': 'secret-config', 'request-id': 'req_1' });
     res.write('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n');
-    res.end(`event: message_delta\ndata: {"type":"message_delta","provider_metadata":{"gateway":{"routing":{},"cost":"0.5","gatewayCost":"${options.cost ?? '1.25'}"}}}\n\n`);
+    res.end(`event: message_delta\ndata: {"type":"message_delta","provider_metadata":{"gateway":{"routing":{},"cost":"0.5","gatewayCost":"${options.cost ?? '1.25'}"${options.market === undefined ? '' : `,"marketCost":"${options.market}"`}}}}\n\n`);
   });
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
   closers.push(() => new Promise((done) => server.close(() => done())));
@@ -548,6 +548,16 @@ describe('gatewayHandler: budget and concurrency', () => {
     expect(session.cap).toBe('sessionUsd');
     expect(caps).toEqual(['turnUsd', 'sessionUsd']);
     expect(gw.seen).toHaveLength(3);
+  });
+
+  it('charges marketCost when the Gateway bills 0 (a provider key, BYOK), so the caps still hold', async () => {
+    const gw = await gateway({ cost: '0', market: '1.25' });
+    const shared = ledger();
+    const h = handler(gw.url, { ledger: shared, budget: { turnUsd: 2, sessionUsd: Infinity } }).h;
+    await drain((await h(req('/v1/messages'), signal())).body);
+    expect(shared.session).toBe(1.25);
+    await drain((await h(req('/v1/messages'), signal())).body);
+    expect((await refused(h(req('/v1/messages'), signal()), 'budget')).cap).toBe('turnUsd');
   });
 
   it('takes its caps from the descriptor only: Infinity turns one off, and a missing one is a TypeError', async () => {
