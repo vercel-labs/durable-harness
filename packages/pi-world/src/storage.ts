@@ -589,7 +589,8 @@ export class WorldStorage implements Storage {
 
   /** Create a new session: a workflow run with an empty Pi journal. Returns its id. */
   static async create(world: World, options: Pick<WorldStorageOptions, 'name' | 'traceAudience' | 'config'> = {}): Promise<string> {
-    const sessionId = `wrun_${ulid()}`;
+    // The World's own id when it mints one (world-vercel tags the region its data lives in), as the SDK's start() does.
+    const sessionId = `wrun_${world.createRunId?.({}) ?? ulid()}`;
     await createRun(world, sessionId, options.name, options.traceAudience, options.config);
     return sessionId;
   }

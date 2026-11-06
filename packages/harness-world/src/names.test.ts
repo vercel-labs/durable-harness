@@ -102,6 +102,21 @@ async function until<T>(fn: () => Promise<T | undefined>, timeoutMs = 10_000): P
   }
 }
 
+describe('run ids', () => {
+  it("are the World's own when it mints them (world-vercel's carry the region), a plain ULID otherwise", async () => {
+    world = createWorld({ dataDir: await mkdtemp(join(tmpdir(), 'harness-world-names-')), recoverActiveRuns: false });
+    const sessions = durableSessions({ world, harness: answer });
+    const plain = (await sessions.start()).sessionId;
+    expect(plain).toMatch(/^wrun_[0-9A-HJKMNP-TV-Z]{26}$/);
+    const minted = ulid();
+    const asked: unknown[] = [];
+    Object.assign(world, { createRunId: (options?: unknown) => (asked.push(options), minted) });
+    const { sessionId } = await sessions.start();
+    expect(sessionId).toBe(`wrun_${minted}`);
+    expect(asked).toEqual([{}]);
+  });
+});
+
 describe('sessions under an older name', () => {
   it('start under the new name, and drive sessions an earlier version started (the harness-world form, another version) alike', async () => {
     world = createWorld({ dataDir: await mkdtemp(join(tmpdir(), 'harness-world-names-')), recoverActiveRuns: false });
