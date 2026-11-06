@@ -104,7 +104,7 @@ async function turn(options: OpenCodeHarnessOptions, prompt: string) {
   const { sessionId } = await sessions.start({ prompt });
   const state = await until(async () => {
     const s = await sessions.inspect(sessionId);
-    return transcriptOf(s).some((r) => r.data.type === 'turn') || s.effectOrder.some((e) => e.name === 'unavailable') ? s : undefined;
+    return transcriptOf(s).some((r) => r.data.type === 'turn') || s.effectOrder.some((e) => e.name === 'unavailable' && (e.status === 'completed' || e.status === 'failed')) ? s : undefined;
   });
   return { sessions, sessionId, state, requests: gateway.requests.slice(before) };
 }
