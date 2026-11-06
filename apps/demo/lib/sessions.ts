@@ -10,7 +10,7 @@ import {
   laneAvailable,
   type OwnerPolicy,
 } from 'harness-world';
-import { virtual } from 'durable-harness';
+import { queueHoldConsumerGroup, vercelTriggerConsumerGroup, virtual } from 'durable-harness';
 import { vercelChannel } from 'harness-world/vercel-channel';
 import type { VercelSandboxProvider } from 'harness-world-hybrid/sandbox';
 import { byHands, checkUpFront, demoSandbox, type UpFront, upFrontFields } from './hands';
@@ -281,6 +281,11 @@ async function buildSessions(chaos: boolean | ChaosDriveOptions): Promise<Durabl
       // sessions; run_on_machine never parks) are policed through the
       // Sandbox API by owner checks.
       owners: [sandboxOwners()],
+      // The chat routes' wakes are held for the Function that consumes the
+      // kernel's topic (send-and-hold, where the World supports it): the flow
+      // route, whose trigger vercel.json gives, so its consumer group is the
+      // one Vercel derives from that `functions` key.
+      queueHoldConsumerGroup: queueHoldConsumerGroup() ?? vercelTriggerConsumerGroup('app/.well-known/durable-harness/v1/flow/route.ts'),
       // Nothing beats: each drive runs under its queue message (or, on the
       // drive route, a deadline with a companion message behind it), and a
       // redelivery takes over at once (harness-world's anchor.ts). A tab's

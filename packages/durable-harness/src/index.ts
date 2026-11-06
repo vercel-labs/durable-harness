@@ -21,7 +21,8 @@
 export { type Agent, type AgentOptions, type ChatRouteOptions, type Durability, durableAgent, type DurableAgentOptions, waitUntil } from './agent.ts';
 export { flowHandler } from './flow.ts';
 export { forwardQueue, type ForwardQueueOptions, type QueueMeta, queueHandler, registered, registerQueue, type RegisterQueueOptions } from './registry.ts';
-export { FLOW_ROUTE, FX_ROUTE, QUEUE_NAMESPACE, QUEUE_PREFIX, QUEUE_TOPIC } from './routing.ts';
+export { FLOW_ROUTE, FX_ROUTE, QUEUE_NAMESPACE, QUEUE_PREFIX, QUEUE_TOPIC, vercelTriggerConsumerGroup } from './routing.ts';
+export { queueHoldConsumerGroup } from './queue-hold.ts';
 export { getWorld, worldTarget } from './world.ts';
 // Where an agent's tools run the commands and files its model picks.
 export {

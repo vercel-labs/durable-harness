@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { harnessFiles, VERCEL_TARGET } from '../src/native.ts';
 import { applyDurableHarness } from '../src/next.ts';
-import { flowTrigger, fxTrigger, QUEUE_TOPIC } from '../src/routing.ts';
+import { flowTrigger, fxTrigger, QUEUE_HOLD_FILE, QUEUE_TOPIC, vercelTriggerConsumerGroup } from '../src/routing.ts';
+import { queueHoldConsumerGroup } from '../src/queue-hold.ts';
 import { unavailableHint } from '../src/hint.ts';
 import { defaultProjectDir, harnessFunctions, harnessIncludes, vercelJson } from '../src/vercel.ts';
 
@@ -63,6 +64,8 @@ const NPM_LINUX: Tree = {
 const NPM_FILES = ['node_modules/tree-sitter-bash/tree-sitter-bash.wasm', 'node_modules/tree-sitter-powershell/tree-sitter-powershell.wasm', 'node_modules/web-tree-sitter/tree-sitter.wasm'];
 /** The grammars' glob in a hoisted node_modules. */
 const GRAMMARS = 'node_modules/{web-tree-sitter,tree-sitter-{bash,powershell}}/*.wasm';
+/** A chat function's `includeFiles` at build (`harnessFunctions`): its harnesses' files and the consumer group held wakes are claimed for. */
+const withHold = (glob?: string) => (glob ? `{${glob},${QUEUE_HOLD_FILE}}` : QUEUE_HOLD_FILE);
 /** Any Claude Code or Codex binary, or its platform package. */
 const BINARY = /claude-agent-sdk-|codex|\/claude$/;
 
@@ -173,7 +176,7 @@ describe('harnessFunctions', () => {
   it('the flow function: max duration, the queue trigger without a consumer, the harness files; each chat function the files its harnesses need', () => {
     const dir = project(app);
     const functions = harnessFunctions({ projectDir: dir });
-    expect(Object.keys(functions)).toEqual(['api/flow.ts', 'api/aliased.ts', 'api/chat.ts', 'api/support/chat.ts']);
+    expect(Object.keys(functions)).toEqual(['api/flow.ts', 'api/aliased.ts', 'api/chat.ts', 'api/claude.ts', 'api/pi.ts', 'api/support/chat.ts']);
     const include = harnessIncludes({ projectDir: dir })!;
     expect(functions['api/flow.ts']).toEqual({
       maxDuration: 'max',
@@ -182,14 +185,15 @@ describe('harnessFunctions', () => {
     });
     expect(JSON.stringify(functions)).not.toContain('consumer');
     // A chat function gets the files of the harnesses its imports reach: OpenCode's here, and no binary anywhere.
-    const grammars = functions['api/chat.ts']!.includeFiles!;
-    expect(matched(dir, grammars)).toEqual(NPM_FILES);
+    const grammars = harnessFunctions({ projectDir: dir, chat: 'api/chat.ts' })['api/chat.ts']!.includeFiles!;
+    expect(functions['api/chat.ts']).toEqual({ includeFiles: grammars });
+    expect(matched(dir, grammars)).toEqual([QUEUE_HOLD_FILE, ...NPM_FILES]);
     expect(functions['api/support/chat.ts']).toEqual({ includeFiles: grammars });
     expect(matched(dir, include).filter((f) => BINARY.test(f))).toEqual([]);
-    // Pi, Claude Code and Codex need none (no entry: Vercel refuses an empty one); an import the scan cannot follow (a path alias) gets every harness's.
-    expect(functions['api/pi.ts']).toBeUndefined();
-    expect(functions['api/claude.ts']).toBeUndefined();
-    expect(functions['api/aliased.ts']).toEqual({ includeFiles: include });
+    // Pi, Claude Code and Codex need no harness files, only the consumer group; an import the scan cannot follow (a path alias) gets every harness's.
+    expect(functions['api/pi.ts']).toEqual({ includeFiles: QUEUE_HOLD_FILE });
+    expect(functions['api/claude.ts']).toEqual({ includeFiles: QUEUE_HOLD_FILE });
+    expect(functions['api/aliased.ts']).toEqual({ includeFiles: withHold(include) });
   });
 
   it('a chat function that imports only /fx or /sandbox gets no harness files', () => {
@@ -199,14 +203,14 @@ describe('harnessFunctions', () => {
       'api/fx.ts': "import { tools } from '../lib/fx.js'\nexport const { GET, POST } = agentOf(tools).chatRoute()\n",
     });
     const functions = harnessFunctions({ projectDir: dir });
-    expect(functions['api/fx.ts']).toBeUndefined();
+    expect(functions['api/fx.ts']).toEqual({ includeFiles: QUEUE_HOLD_FILE });
   });
 
   it('takes the chat functions the app names, and more files', () => {
     const dir = project({ ...app, 'api/queue.ts': app['api/flow.ts']! });
     const functions = harnessFunctions({ projectDir: dir, chat: 'api/chat.ts', flow: 'api/queue.ts', includeFiles: ['data/**'] });
     expect(Object.keys(functions)).toEqual(['api/queue.ts', 'api/chat.ts']);
-    expect(functions['api/chat.ts']!.includeFiles).toMatch(/,data\/\*\*}$/);
+    expect(functions['api/chat.ts']!.includeFiles).toMatch(/,data\/\*\*,\.durable-harness\/queue-hold\.json}$/);
   });
 
   it('a file it is given that is not there is an error, not a function without its files', () => {
@@ -233,9 +237,9 @@ describe('harnessFunctions', () => {
     });
     const functions = harnessFunctions({ projectDir: dir });
     const all = harnessIncludes({ projectDir: dir });
-    expect(matched(dir, functions['api/mixed.ts']!.includeFiles!)).toEqual(NPM_FILES);
-    expect(functions['api/workspace.ts']).toEqual({ includeFiles: all });
-    expect(functions['api/dynamic.ts']).toEqual({ includeFiles: all });
+    expect(matched(dir, functions['api/mixed.ts']!.includeFiles!)).toEqual([QUEUE_HOLD_FILE, ...NPM_FILES]);
+    expect(functions['api/workspace.ts']).toEqual({ includeFiles: withHold(all) });
+    expect(functions['api/dynamic.ts']).toEqual({ includeFiles: withHold(all) });
     // A tsconfig alias it resolves narrows it again.
     expect(functions['api/aliased.ts']).toEqual({ includeFiles: functions['api/chat.ts']!.includeFiles });
   });
@@ -255,8 +259,25 @@ describe('harnessFunctions', () => {
     expect(defaultProjectDir(['node', join(web, '.vercel/vercel-loader.mjs'), join(web, '.vercel/vercel-temp.mjs')], root)).toBe(web);
     expect(defaultProjectDir(['node', '/usr/local/bin/durable-harness', 'vercel-json'], web)).toBe(web);
     const functions = harnessFunctions({ projectDir: web });
-    expect(functions['api/chat.ts']!.includeFiles).toBe(`../../${GRAMMARS}`);
+    expect(functions['api/chat.ts']!.includeFiles).toBe(withHold(`../../${GRAMMARS}`));
     expect(matched(web, functions['api/flow.ts']!.includeFiles!)).toEqual(['../../node_modules/tree-sitter-bash/tree-sitter-bash.wasm']);
+  });
+
+  it('records the flow function\'s consumer group, as Vercel names it after its functions key, for the chat functions\' held wakes', () => {
+    const dir = project(app);
+    harnessFunctions({ projectDir: dir });
+    expect(JSON.parse(readFileSync(join(dir, QUEUE_HOLD_FILE), 'utf8'))).toEqual({ consumerGroup: 'api_Sflow_Dts' });
+    expect(queueHoldConsumerGroup({}, dir)).toBe('api_Sflow_Dts');
+    const named = project({ ...app, 'api/my_fn.ts': app['api/flow.ts']! });
+    harnessFunctions({ projectDir: named, flow: 'api/my_fn.ts' });
+    expect(queueHoldConsumerGroup({}, named)).toBe('api_Smy__fn_Dts');
+  });
+
+  it('a vercel.json written ahead of time (`vercel-json`) records nothing: nothing runs at build to give it, so nothing is held', () => {
+    const dir = project(app);
+    const { functions } = vercelJson({ projectDir: dir });
+    expect(JSON.stringify(functions)).not.toContain(QUEUE_HOLD_FILE);
+    expect(queueHoldConsumerGroup({}, dir)).toBeUndefined();
   });
 
   it("is durable-harness's own topic, apart from the Workflow SDK's", () => {
@@ -382,5 +403,18 @@ describe('the hint for a harness that cannot run', () => {
       if (vercel === undefined) delete process.env.VERCEL;
       else process.env.VERCEL = vercel;
     }
+  });
+});
+
+describe('vercelTriggerConsumerGroup: the consumer group Vercel gives a vercel.json / vercel.ts trigger', () => {
+  it.each([
+    ['app/api/libfx/route.ts', undefined, 'app_Sapi_Slibfx_Sroute_Dts'],
+    ['app/.well-known/durable-harness/v1/flow/route.ts', undefined, 'app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Dts'],
+    ['api/my_fn.ts', undefined, 'api_Smy__fn_Dts'],
+    ['api/flow.ts', 'web', 'web_7Eapi_Sflow_Dts'],
+    ['api/**/*.ts', undefined, 'api_S_2A_2A_S_2A_Dts'],
+  ])('%s (service %s) is %s', (pattern, service, group) => {
+    expect(vercelTriggerConsumerGroup(pattern, service)).toBe(group);
+    expect(group).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });
