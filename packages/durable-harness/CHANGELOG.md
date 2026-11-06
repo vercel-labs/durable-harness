@@ -1,5 +1,23 @@
 # durable-harness
 
+## 0.0.2
+
+### Patch Changes
+
+- [#34](https://github.com/vercel-labs/durable-harness/pull/34) [`135dee5`](https://github.com/vercel-labs/durable-harness/commit/135dee512c6a7aebe710617426c4947c9d2ad498) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Require the latest Workflow SDK v5 Worlds: `@workflow/world` 5.0.5, `@workflow/world-local` 5.1.2, `@workflow/world-vercel` 5.2.3 and `@workflow/world-postgres` 5.0.5.
+
+- [#45](https://github.com/vercel-labs/durable-harness/pull/45) [`2ec7587`](https://github.com/vercel-labs/durable-harness/commit/2ec75874f1c45ef2095aa005782f83d1d80cf151) Thanks [@pranaygp](https://github.com/pranaygp)! - Codex: stop enabling code mode for every model (direct tools need only `direct_only_tool_namespaces`), log calls to tools Codex answers itself, and document what code-mode-only models are offered.
+
+- [#39](https://github.com/vercel-labs/durable-harness/pull/39) [`c7d2472`](https://github.com/vercel-labs/durable-harness/commit/c7d24727bf3c8f64dd73a797b1bc2bed6a653da2) Thanks [@allenzhou101](https://github.com/allenzhou101)! - Expose Codex tools directly for newer models while preserving journal call IDs.
+
+- [#43](https://github.com/vercel-labs/durable-harness/pull/43) [`85b564f`](https://github.com/vercel-labs/durable-harness/commit/85b564f9ba2c61772c205cb9e0a40cce58ee1cbf) Thanks [@pranaygp](https://github.com/pranaygp)! - Read the Gateway's cost from its parsed response metadata, so a cost written in exponent form is charged at its value and a `cost` field elsewhere in the response is ignored.
+
+- [#44](https://github.com/vercel-labs/durable-harness/pull/44) [`139e74d`](https://github.com/vercel-labs/durable-harness/commit/139e74d49347969f7d7ab70976baa190fdd21931) Thanks [@pranaygp](https://github.com/pranaygp)! - Document which Gateway requests `alibaba/qwen3.8-max` on Fireworks refuses for Claude Code, Codex and Pi, and Pi's workaround (set a `thinkingLevel`).
+
+- [#49](https://github.com/vercel-labs/durable-harness/pull/49) [`ba45f19`](https://github.com/vercel-labs/durable-harness/commit/ba45f195442e056873c1c12b2cf084b5afc9ed6a) Thanks [@pranaygp](https://github.com/pranaygp)! - `sandbox({ network })` takes a full Vercel Sandbox `NetworkPolicy` (per-domain rules, including header transforms for credential brokering, and subnets) or a per-session callback, for every harness that runs in a session's Sandbox (Claude Code, Codex, OpenCode, Pi, fx, and pi-durable's `sandboxEnv()`). The harness applies it again on every attach, so set the VM's policy here rather than with `sandbox.update`; header values are kept out of the session's log, its spans, log lines and errors.
+
+- [#50](https://github.com/vercel-labs/durable-harness/pull/50) [`62a7ffc`](https://github.com/vercel-labs/durable-harness/commit/62a7ffc80a3ea20bb8bc8973ca4f5e0e840970dd) Thanks [@pranaygp](https://github.com/pranaygp)! - Document what each harness does with a `prompt`, `followUp` or `steer` sent while a turn runs, and stop `durable-harness/pi` from handing a mid-turn prompt to Pi twice when its inbox is read just before the model call that places it commits.
+
 ## 0.0.1
 
 ### Patch Changes
