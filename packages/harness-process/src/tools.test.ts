@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { defineDoc, type DriveContext, durableSessions, type Harness, type HostTool, readDoc, Yield } from 'harness-world';
+import type { WorkspaceMachine } from 'harness-world-hands/runtime';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { placeSubmissions } from './inbox.ts';
@@ -110,6 +111,20 @@ describe('toolBridge', () => {
     });
     // The drive gives its delivery up through a continuation, never by asking the queue to come back.
     await expect(result).resolves.toBeUndefined();
+  });
+
+  it("gives each call the session's workspace when the harness has one, and none otherwise", async () => {
+    const seen: unknown[] = [];
+    const probe: HostTool = { name: 'probe', description: '', inputSchema: {}, replay: 'safe', execute: async (_input, io) => (seen.push(io.workspace), 'ok') };
+    const workspace = { root: '/workspace' } as unknown as WorkspaceMachine;
+    const { inspect } = await drive(async (ctx) => {
+      expect(await toolBridge(ctx, [probe], { workspace }).call('probe', {}, 'w1')).toEqual({ text: 'ok', isError: false });
+      expect(await toolBridge(ctx, [probe]).call('probe', {}, 'w2')).toEqual({ text: 'ok', isError: false });
+    });
+    await inspect();
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(workspace);
+    expect(seen[1]).toBeUndefined();
   });
 
   it('describes an interrupted call with its last progress', () => {

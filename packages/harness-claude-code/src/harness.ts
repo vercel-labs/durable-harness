@@ -509,6 +509,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const bridge = toolBridge(ctx, tools, {
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
+          // The app's tools reach the Drive the CLI works on (`HostToolIO.workspace`).
+          workspace: machine.workspace,
         });
         // The built-ins: each call an intent before it runs, its outcome after (the hooks below).
         const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true });
