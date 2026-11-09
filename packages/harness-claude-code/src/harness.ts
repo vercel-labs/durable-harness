@@ -234,6 +234,21 @@ export interface ClaudeCodeHarnessOptions {
   /** `query()`'s `maxTurns` (model round trips per turn). */
   maxTurns?: number;
   /**
+   * Claude Code plugins to load (`query()`'s `plugins`): local directories in
+   * the VM, by absolute path. A plugin's hooks run beside the CLI,
+   * outside Claude's sandbox, so it belongs in the image, root-owned: a path
+   * where the session can write (the Drive, the VM's home, temp or cache
+   * dirs, `/tmp`, `/var/tmp`, `/dev/shm`) fails the turn with an
+   * `Unavailable`. Default none.
+   */
+  plugins?: QueryOptions['plugins'];
+  /**
+   * The skills the model may use (`query()`'s `skills`): names, a plugin's as
+   * `<plugin>:<skill>`, or `'all'`. The model calls a skill with the `Skill`
+   * built-in, so `builtins` needs to list it. Default the CLI's.
+   */
+  skills?: QueryOptions['skills'];
+  /**
    * Run the CLI's commands without Claude Code's own sandbox where bubblewrap
    * doesn't work in the VM (with `builtins` on). Default false: such a drive
    * fails the turn with an `Unavailable`. Without that sandbox a command runs
@@ -401,6 +416,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const executable = options.executable ?? CLAUDE_VM_EXECUTABLE;
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
+  if (options.plugins?.some((p) => !posix.isAbsolute(p.path))) throw new TypeError('harness-world-claude-code: plugins takes absolute paths in the VM');
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -475,6 +491,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       try {
         const machine = (held = await sandbox.attach(ctx, { model: handler, deadline }));
         if (!isBrandedMachine(machine)) throw sandboxRequired();
+        const writable = pluginOnWritablePath(machine, options.plugins);
+        if (writable) throw pluginWritable(writable);
 
         // The Function's side of the CLI's config dir: empty, 0700, this drive's.
         // The SDK's resume copies nothing from it (no credentials, no settings),
@@ -688,6 +706,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
           ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+          ...(options.plugins ? { plugins: options.plugins } : {}),
+          ...(options.skills ? { skills: options.skills } : {}),
           pathToClaudeCodeExecutable: executable,
           spawnClaudeCodeProcess: sandboxSpawn({
             machine,
@@ -900,6 +920,25 @@ function sandboxRequired(): Unavailable {
   return new Unavailable('Claude Code runs only in a Vercel Sandbox: pass workspace: sandbox()', {
     code: 'sandbox_required',
     hint: "durable-harness's claudeCode() and claudeCodeHarness() attach the session's sandbox by default; a hand-built harness needs the sandbox tier's machine.",
+  });
+}
+
+/** Dirs any user in the VM can write: the CLI's file tools run outside Claude's sandbox, and its own temp dir is `/tmp/claude`. */
+const SHARED_WRITABLE = ['/tmp', '/var/tmp', '/dev/shm'];
+
+/** A plugin's path where the session can write (the Drive, the VM's home, temp and cache dirs, the shared temp dirs), if any. */
+export function pluginOnWritablePath(machine: Pick<SessionMachine, 'root' | 'dirs'>, plugins: QueryOptions['plugins']): string | undefined {
+  const writable = [machine.root, machine.dirs.home, machine.dirs.tmp, machine.dirs.cache, ...SHARED_WRITABLE];
+  return plugins?.find((p) => {
+    const abs = posix.resolve(p.path);
+    return writable.some((dir) => abs === dir || abs.startsWith(`${dir}/`));
+  })?.path;
+}
+
+/** A plugin the model could have written: its hooks would run outside Claude's sandbox. */
+function pluginWritable(path: string): Unavailable {
+  return new Unavailable(`Claude Code's plugin ${path} is where this session's commands can write, and its hooks would run outside Claude's sandbox: this turn ends`, {
+    hint: 'Load plugins from a root-owned directory in the sandbox image, outside /workspace, the VM\'s home, temp and cache dirs, /tmp, /var/tmp and /dev/shm.',
   });
 }
 

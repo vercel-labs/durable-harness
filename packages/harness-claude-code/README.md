@@ -180,6 +180,8 @@ one in the tests (`test/fixtures/golden-2.1.289.json`).
 | `coalesceMs` | 150 | How long mirrored lines are held so they share journal batches |
 | `idleMs` | 0 | Keep the child this long after a turn for a follow-up |
 | `maxTurns` | | `query()`'s `maxTurns` |
+| `plugins` | | Claude Code plugins, local directories in the VM by absolute path; one where the session can write (the Drive, the VM's home, temp and cache dirs, `/tmp`, `/var/tmp`, `/dev/shm`) fails the turn |
+| `skills` | the CLI's | The skills the model may use, a plugin's as `<plugin>:<skill>`; the `Skill` built-in calls them |
 | `unsandboxedCommands` | `false` | Run the built-ins' commands without Claude's sandbox where bubblewrap doesn't work (the key is then only a correlation id); the stand-in VM's tests. `durable-harness` refuses it |
 | `log` | | Diagnostics |
 

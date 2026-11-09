@@ -9,7 +9,7 @@ import { groupAlive, journalRecords, type SessionMachine, transcriptOf } from 'h
 import { FILES_LOST_NOTE, SANDBOX_DOC, type SandboxNetworkOption, sessionName } from 'harness-world-sandbox';
 import type { FakeSandboxApi } from 'harness-world-sandbox/testing/fake-api';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, claudeCodeHarness, claudeSandboxSettings, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
+import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, type ClaudeCodeHarnessOptions, claudeCodeHarness, claudeSandboxSettings, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, pluginOnWritablePath, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
 import { uuidFrom } from '../src/ids.ts';
 import { CLAUDE_STREAM, JournalSessionStore, type TranscriptLine, toolUseIds } from '../src/store.ts';
 import { type FakeSdk, fakeSdk } from './fake-sdk.ts';
@@ -83,6 +83,8 @@ async function session(
     api?: FakeSandboxApi;
     /** `sandbox({ network })` (default `allow-all`). */
     network?: SandboxNetworkOption;
+    /** More harness options, as given. */
+    options?: Partial<ClaudeCodeHarnessOptions>;
   } = {}
 ) {
   const world = createWorld({ dataDir, recoverActiveRuns: opts.recover ?? false });
@@ -102,6 +104,7 @@ async function session(
       // The stand-in VM is this machine: no bubblewrap on macOS.
       unsandboxedCommands: true,
       ...(opts.idleMs ? { idleMs: opts.idleMs } : {}),
+      ...opts.options,
     }),
     ...(opts.chaos ? { chaos: true, crash: opts.crash ?? (() => {}) } : {}),
   });
@@ -454,6 +457,47 @@ describe('claudeCodeHarness defaults (scripted SDK)', () => {
     expect(opts).toMatchObject({ tools: [], allowedTools: [] });
     expect(opts.mcpServers).toBeUndefined();
     expect(opts.systemPrompt.append).toBe(NO_TOOLS_NOTE);
+  });
+});
+
+describe('claudeCodeHarness query options (scripted SDK)', () => {
+  it('passes plugins and skills to query(), and neither without the options', async () => {
+    const plugins = [{ type: 'local' as const, path: '/opt/app/plugin' }];
+    const skills = ['app:review'];
+    const sdk = fakeSdk();
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk, { options: { plugins, skills } });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    await waitTurns(a.sessions, sessionId, 1);
+    expect(sdk.queries[0]).toMatchObject({ plugins, skills, settingSources: [] });
+
+    const plain = fakeSdk();
+    const b = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), plain);
+    const other = await b.sessions.start();
+    await b.sessions.send(other.sessionId, 'hello');
+    await waitTurns(b.sessions, other.sessionId, 1);
+    expect('plugins' in plain.queries[0]!).toBe(false);
+    expect('skills' in plain.queries[0]!).toBe(false);
+  });
+
+  it('refuses a relative plugin path when the harness is built', () => {
+    expect(() => claudeCodeHarness({ plugins: [{ type: 'local', path: 'plugin' }] })).toThrow(/plugins takes absolute paths/);
+  });
+
+  it('finds a plugin where the session can write: the Drive, the VM\'s home, temp or cache dirs, the shared temp dirs', () => {
+    const machine = { root: '/workspace', dirs: { home: '/var/lib/dh/s/home', config: '/var/lib/dh/s/config', 'codex-home': '/var/lib/dh/s/codex-home', tmp: '/var/lib/dh/s/tmp', cache: '/var/lib/dh/s/cache' } };
+    const at = (path: string) => pluginOnWritablePath(machine, [{ type: 'local', path }]);
+    expect(at('/workspace/plugin')).toBe('/workspace/plugin');
+    expect(at('/workspace')).toBe('/workspace');
+    expect(at('/var/lib/dh/s/tmp/x/../plugin')).toBe('/var/lib/dh/s/tmp/x/../plugin');
+    expect(at('/var/lib/dh/s/home/plugin')).toBe('/var/lib/dh/s/home/plugin');
+    expect(at('/tmp/claude/plugin')).toBe('/tmp/claude/plugin');
+    expect(at('/var/tmp/plugin')).toBe('/var/tmp/plugin');
+    expect(at('/dev/shm/plugin')).toBe('/dev/shm/plugin');
+    expect(at('/opt/app/plugin')).toBeUndefined();
+    expect(at('/tmpfoo/plugin')).toBeUndefined();
+    expect(at('/workspace-plugin')).toBeUndefined();
+    expect(at('/opt/../workspace/plugin')).toBe('/opt/../workspace/plugin');
   });
 });
 
