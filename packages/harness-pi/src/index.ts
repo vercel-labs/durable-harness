@@ -453,6 +453,7 @@ class PiDrive {
                 ? host(params, {
                     signal: combined,
                     stepId: io.stepId,
+                    ...(io.idempotencyKey ? { idempotencyKey: io.idempotencyKey } : {}),
                     park: io.park,
                     ...(io.settlement ? { settlement: io.settlement } : {}),
                     ...(io.chaosArmedMs !== undefined ? { chaosArmedMs: io.chaosArmedMs } : {}),

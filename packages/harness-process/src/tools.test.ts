@@ -2,7 +2,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
-import { defineDoc, type DriveContext, durableSessions, type Harness, type HostTool, readDoc, Yield } from 'harness-world';
+import { defineDoc, type DriveContext, durableSessions, effectIdempotencyKey, type Harness, type HostTool, readDoc, Yield } from 'harness-world';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { placeSubmissions } from './inbox.ts';
@@ -97,6 +97,39 @@ describe('toolBridge', () => {
     const names = (await inspect()).effectOrder.map((e) => e.key);
     expect(names).toEqual([expect.stringMatching(/^place:/), 'barrier:p1', 'tool:p1', 'tool:r1', 'barrier:p2', 'tool:p2']);
     expect(runs).toEqual(['pay:1', 'read:2', 'pay:3']);
+  });
+
+  it("hands a safe tool the call's idempotency key only after the harness's record of the call is in the log", async () => {
+    const seen: string[] = [];
+    const create: HostTool = {
+      name: 'create',
+      description: '',
+      inputSchema: {},
+      replay: 'safe',
+      async execute(_input, io) {
+        seen.push('run');
+        const key = await io.idempotencyKey!();
+        // Asking again neither waits again nor changes the key.
+        expect(await io.idempotencyKey!()).toBe(key);
+        seen.push(`key:${key}`);
+        return key;
+      },
+    };
+    const read: HostTool = { name: 'read', description: '', inputSchema: {}, replay: 'safe', execute: async () => (seen.push('read'), 'ok') };
+    let runId = '';
+    const { inspect } = await drive(async (ctx) => {
+      runId = ctx.runId;
+      const bridge = toolBridge(ctx, [create, read], {
+        beforeNever: async ({ callId }) => void seen.push(`barrier:${callId}`),
+      });
+      await bridge.call('read', {}, 'r1');
+      await bridge.call('create', {}, 'c1');
+    });
+    const state = await inspect();
+    const key = await effectIdempotencyKey(runId, 'tool:c1');
+    // A safe tool that never asks for its key runs without the barrier.
+    expect(seen).toEqual(['read', 'run', 'barrier:c1', `key:${key}`]);
+    expect(state.effects.get('tool:c1')).toMatchObject({ status: 'completed', output: key });
   });
 
   it('a failing tool is an error result; a stopped drive halts and rethrows', async () => {

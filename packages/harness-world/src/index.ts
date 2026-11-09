@@ -123,6 +123,7 @@ export type {
   PromptDocs,
 } from './docs.ts';
 export { hostToolIO } from './host-tool-io.ts';
+export { effectIdempotencyKey } from './idempotency.ts';
 export { isMark, mark, markTime, PROCESS_ID, processInfo } from './marks.ts';
 export type { Mark, MarkName } from './marks.ts';
 export { rawSessions, stateFromSnapshot } from './raw.ts';

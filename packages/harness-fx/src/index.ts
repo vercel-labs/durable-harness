@@ -898,6 +898,7 @@ class FxDrive {
                 progress: io.progress,
                 ctx: this.ctx,
                 stepId: io.stepId,
+                ...(io.idempotencyKey ? { idempotencyKey: io.idempotencyKey } : {}),
                 park: io.park,
                 ...(io.settlement ? { settlement: io.settlement } : {}),
                 ...(io.chaosArmedMs !== undefined ? { chaosArmedMs: io.chaosArmedMs } : {}),

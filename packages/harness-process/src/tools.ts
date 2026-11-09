@@ -44,7 +44,9 @@ export interface ToolBridgeOptions {
   /**
    * Runs before a `replay: 'never'` call that the log has not finished:
    * the place for `journal.flush()`, so the harness's record of the call is
-   * in the log before the call's intent is.
+   * in the log before the call's intent is. A `safe` call runs it too, the
+   * first time it asks for its `idempotencyKey()`, before the key is handed
+   * to the tool.
    */
   beforeNever?: (call: { name: string; callId: string; args: unknown }) => Promise<void>;
   /** Serialize calls (a per-drive mutex). Default true: concurrent effects in one drive are not exercised yet. */
@@ -105,7 +107,22 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
             ...(tool.requires ? { requires: tool.requires } : {}),
             ...(tool.needs?.length ? { needs: tool.needs } : {}),
           },
-          (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
+          (io) => {
+            const host = hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal });
+            const kernelKey = io.idempotencyKey;
+            if (!kernelKey) return tool.execute(args, host);
+            // The harness's record of the call (the line that carries its call
+            // id) must be in the log before the key leaves the process, the way
+            // it must before a `never` call starts: without it, a crash would
+            // have the harness ask again under a new call id.
+            let gated: Promise<string> | undefined;
+            const idempotencyKey = () =>
+              (gated ??= (async () => {
+                if (tool.replay !== 'never') await options.beforeNever?.({ name: tool.name, callId, args });
+                return kernelKey();
+              })());
+            return tool.execute(args, { ...host, idempotencyKey });
+          }
         );
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
         return { text: String(text), isError: false };
