@@ -326,7 +326,9 @@ describe('fencing', () => {
     const { sessionId } = await sessions.start({ harness: 'scripted' });
     await sessions.send(sessionId, 'go');
     const first = leased.broker.deliver()!;
-    await until(async () => toolRunning(await sessions.inspect(sessionId)));
+    // The intent is in the log before the tool's body runs: wait for both, so
+    // the frozen call is the one listening for its abort, not the replacement.
+    await until(async () => (s.toolCalls === 1 ? toolRunning(await sessions.inspect(sessionId)) : undefined));
     first.freeze();
     s.tool = async () => 'ran';
     const again = await until(async () => leased.broker.deliver());

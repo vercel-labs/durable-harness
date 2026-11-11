@@ -101,10 +101,13 @@ describe('drive route: drive in this process, a companion past its deadline as t
     const tag: string[] = [];
     const { a, b, broker } = await setupVercel(harness({ tag }));
     const { sessionId } = await b.start({});
+    const sentAt = Date.now();
     await a.send(sessionId, 'hi', 'prompt', { wake: 'backstop' });
     expect(companions(broker)).toHaveLength(1);
-    // Delayed by the deadline's whole seconds (1) plus 5: 6 queue seconds of 50 ms.
-    expect(companions(broker)[0]!.availableAt - Date.now()).toBeGreaterThan(250);
+    // Delayed by the deadline's whole seconds (1) plus 5: 6 queue seconds of
+    // 50 ms, from when it was queued (measured from before send(), not after
+    // it returns, which a slow runner can make tens of milliseconds later).
+    expect(companions(broker)[0]!.availableAt - sentAt).toBeGreaterThanOrEqual(300);
     const t0 = Date.now();
     await a.drive(sessionId);
     expect(Date.now() - t0).toBeLessThan(400); // did not wait for anything
