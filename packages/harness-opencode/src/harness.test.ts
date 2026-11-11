@@ -725,6 +725,11 @@ describe('the OpenCode drive, built-ins on', () => {
       await h.request({ type: 'barrier', kind: 'primary' });
       h.commit(['session.step.started']);
       expect(await call(h, 'call_a', 'write', { path: 'a.txt', content: 'a' }, 'Created file successfully: a.txt')).toMatchObject({ ok: true });
+      // Armed once call_a is done, so the crash lands in call_b: armed up
+      // front, it hit call_a whenever the write ran past its afterMs (a cold
+      // workspace on a loaded runner), and with no earlier call settled
+      // there is rightly no note.
+      await a.sessions.chaos(sessionId, { at: 'tool', afterMs: 300 });
       await call(h, 'call_b', 'shell', { command: 'sleep 5' });
       await new Promise(() => {});
     };
@@ -741,7 +746,6 @@ describe('the OpenCode drive, built-ins on', () => {
     };
     const a = await session(dataDir, [first], { builtins: true, durable: false, chaos: true, crash: () => crashed() });
     const { sessionId } = await a.sessions.start();
-    await a.sessions.chaos(sessionId, { at: 'tool', afterMs: 300 });
     await a.sessions.send(sessionId, 'go');
     await died;
     await a.world.close?.();
