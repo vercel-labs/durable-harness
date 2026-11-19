@@ -154,6 +154,28 @@ GitHub side: the repository must let Actions create pull requests (Settings >
 Actions > General, "Allow GitHub Actions to create and approve pull
 requests"). The release commit and tags are signed by GitHub.
 
+## When a publish fails
+
+The publish step's log says which version failed and why; the verify step
+after it then reports the version as `NOT ON NPM` (once, without waiting for
+the registry, since nothing was published).
+
+- **`E404 Not Found - PUT https://registry.npmjs.org/durable-harness`**: npm
+  did not accept the job's OIDC token, so the publish went out unauthenticated,
+  and npm answers an unauthenticated publish with 404 rather than 401. The
+  package's Trusted Publisher on npmjs.com is missing, or does not match this
+  workflow exactly (organization `vercel-labs`, repository `durable-harness`,
+  workflow filename `release.yml`, no environment; step 2 of "One-time setup").
+  This is what failed the first publish of 0.0.1, from the Version Packages
+  pull request merged before the Trusted Publisher was configured. Fix it on
+  npmjs.com, then run the Release workflow by hand: nothing in the repository
+  needs to change.
+- **"previously staged"**: the version waits for a maintainer to approve it in
+  the package's Staged Packages tab on npmjs.com.
+
+Either way, a run by hand (Actions > Release > Run workflow) publishes every
+version on `main` that npm does not have yet.
+
 ## The release pull request's token
 
 A pull request opened with `GITHUB_TOKEN` does not run CI. So the Release

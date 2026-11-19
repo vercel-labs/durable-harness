@@ -150,7 +150,11 @@ if (missing.length > 0) {
   console.error(
     '\n  Read the publish step above. If `pnpm publish` reported the version as\n' +
       '  "previously staged", it is waiting for a maintainer to approve it in the\n' +
-      "  package's Staged Packages tab on npmjs.com. Otherwise re-run the Release\n" +
+      "  package's Staged Packages tab on npmjs.com. If it failed with\n" +
+      '  `E404 Not Found - PUT https://registry.npmjs.org/<package>`, npm did not\n' +
+      "  accept the job's OIDC token: the package's Trusted Publisher on npmjs.com\n" +
+      '  is missing or does not match this repository and `release.yml`\n' +
+      '  (docs/releasing.md, "When a publish fails"). Otherwise re-run the Release\n' +
       '  workflow (workflow_dispatch); `changeset publish` skips versions already live.'
   );
 }
