@@ -142,7 +142,7 @@ async function turn(sessions: Sessions, prompt: string, sessionId?: string) {
   } else id = (await sessions.start({ prompt })).sessionId;
   const state = await until(async () => {
     const s = await sessions.inspect(id!);
-    return turnsOf(s) >= done || s.effectOrder.some((e) => e.name === 'unavailable') ? s : undefined;
+    return turnsOf(s) >= done || s.effectOrder.some((e) => e.name === 'unavailable' && (e.status === 'completed' || e.status === 'failed')) ? s : undefined;
   });
   return { sessionId: id, state, requests: gateway.requests.slice(before) };
 }

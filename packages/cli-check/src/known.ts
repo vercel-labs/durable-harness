@@ -43,15 +43,6 @@ export const KNOWN: KnownIssue[] = [
     reason: 'pi-world has no close path: its runs stay running',
     owner: 'ours',
   },
-  {
-    invariant: 'events',
-    scenario: '*',
-    world: 'postgres',
-    codes: ['timestamps'],
-    reason: "world-postgres stores created_at as the server's local time and reads it as UTC (createdAt hours off startedAt)",
-    owner: 'workflow',
-    when: () => process.env.CLI_CHECK_PG_TIMEZONE !== undefined && process.env.CLI_CHECK_PG_TIMEZONE !== 'UTC',
-  },
 ];
 
 export interface Cell {

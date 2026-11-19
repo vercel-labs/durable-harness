@@ -155,7 +155,8 @@ describe('a delivery that finds open work', () => {
     const a = hostProcess(world!);
     await sessions.send(sessionId, 'go');
     const first = deliver({ ...server, world: a.world }, sessionId, { anchor: { k: 'msg', m: 'msg_a' } });
-    await until(async () => toolRunning(await inspect()));
+    // The intent is in the log before the tool's body runs: wait for both, so `release` is the call's.
+    await until(async () => (typeof release === 'function' ? toolRunning(await inspect()) : undefined));
     for (let i = 0; i < 4; i++) {
       expect(await deliver(server, sessionId, { anchor: { k: 'msg', m: `msg_b${i}` } })).toBeUndefined();
     }
