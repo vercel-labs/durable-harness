@@ -10,7 +10,9 @@ import type { DocEffect, DocsIO, DocsReader, DocState } from './docs.ts';
  * What to do with an effect whose intent is committed (`step_started`) but
  * whose outcome is not, because the process running it died.
  *
- * - `safe`: run it again. Reads, idempotent writes, model calls.
+ * - `safe`: run it again. Reads, idempotent writes, model calls. A tool that
+ *   creates something is `safe` when it passes the system it calls
+ *   `io.idempotencyKey()` (the same key on every run of the call).
  * - `never`: do not rerun. The harness gets an *interrupted* result carrying
  *   whatever partial output reached the log, and decides what to do.
  *
@@ -384,8 +386,29 @@ export interface EffectIO {
   signal: AbortSignal;
   /** Report progress. Streamed to `step:<id>`; replayed as `partial` on interruption. */
   progress(chunk: unknown): void;
-  /** The intent's step id. */
+  /**
+   * The intent's step id. A rerun of the same call (after a crash, a lost
+   * write, a handoff) gets a new one: use `idempotencyKey()` as a key for an
+   * external system, not this.
+   */
   stepId: string;
+  /**
+   * A key for the external system this effect calls (an idempotency key, or
+   * a name a resource is created under): the same for every run of this call
+   * in this session, and different for every other call. `dh-` and 64 hex
+   * digits, so it fits as a name almost anywhere.
+   *
+   * It resolves once the call that minted it is durable: in a run-ahead
+   * drive, a `safe` effect starts before the model response that asked for
+   * it is in the log, and a crash then would rerun the model and get a new
+   * call (with a new key). So await it before the side effect, not after;
+   * only an effect that asks for it waits, the rest still run ahead.
+   *
+   * With it, a tool that creates something can be `replay: 'safe'`: a rerun
+   * passes the same key, and the system it calls returns what the first
+   * attempt made. Optional so hand-written contexts need not provide it.
+   */
+  idempotencyKey?: () => Promise<string>;
   /**
    * Hand this running intent to an owner outside the drive (a detached
    * command). After it commits, the work can outlive this drive: throw
@@ -478,6 +501,8 @@ export interface HostToolIO {
   ctx: DriveContext;
   /** See `EffectIO`: present when the harness passes the effect's io through. */
   stepId?: string;
+  /** See `EffectIO.idempotencyKey`: present when the harness passes the effect's io through (`hostToolIO`). */
+  idempotencyKey?: () => Promise<string>;
   park?: EffectIO['park'];
   settlement?: Settlement;
   chaosArmedMs?: number;

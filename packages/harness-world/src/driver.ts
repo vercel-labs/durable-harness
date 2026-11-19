@@ -26,6 +26,7 @@ import {
 import { commitClose, commitDetach, commitFact, finishFact, isDetached, isFactStep, settleParked } from './facts.ts';
 import { armChaosFire, armOwnerCheck, type OwnerPolicy } from './owners.ts';
 import { currentLane, type HandoffOutput, homeLane, isEpochStep, type LaneOptions, needsOf, route } from './lanes.ts';
+import { effectIdempotencyKey } from './idempotency.ts';
 import {
   type ActiveDrive,
   activeDrive,
@@ -2475,9 +2476,19 @@ function createContext(
     let chaos: ReturnType<typeof armChaos> = { disarm: () => {} };
     // Documents, pinned per call: the edits ride on this call's outcome.
     const docs = callDocs(view, pinned);
+    let idempotency: Promise<string> | undefined;
     const io: EffectIO = {
       signal: ownership.signal,
       stepId,
+      // The key is the call's: it must not reach another system before the
+      // call is durable. Running ahead, wait for everything this drive issued
+      // (the model response that asked for the call, and this intent) to land
+      // and take; a strict drive wrote both before `fn` started.
+      idempotencyKey: () =>
+        (idempotency ??= (async () => {
+          if (ahead) await barrier();
+          return effectIdempotencyKey(runId, key);
+        })()),
       docs: docs.io,
       progress: (chunk) => {
         progress.write(chunk);
