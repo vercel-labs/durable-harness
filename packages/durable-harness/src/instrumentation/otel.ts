@@ -47,7 +47,7 @@ const OTEL_SDK_PINS = {
   '@opentelemetry/sdk-trace-base': '2.2.0',
   '@opentelemetry/resources': '2.2.0',
   '@opentelemetry/otlp-transformer': '0.208.0',
-  '@vercel/agent-runs': '0.0.1',
+  '@vercel/agent-runs': '1.1.0',
 } as const;
 const OTEL_SDK_INSTALL = `pnpm add ${Object.entries(OTEL_SDK_PINS).map(([name, version]) => `${name}@${version}`).join(' ')}`;
 
@@ -142,8 +142,8 @@ export function agentRuns(options: AgentRunsOptions = {}): AgentRuns {
         spanProcessors: [vercelSpanProcessor(JsonTraceSerializer, (error) => onError(error, { phase: 'complete' })), ...(options.spanProcessors ?? [])],
       });
       context.setGlobalContextManager(new AsyncContextManager());
-      // Agent Runs reads spans of the `eve.agent` scope at schema version 4: the library writes the schema.
-      const telemetry = otelTelemetry({ provider, idGenerator, tracerName: 'eve.agent', tracerVersion: VERSION });
+      // The library's default scope, `vercel.ai.tracing`, is the one Agent Runs reads; it writes the schema too.
+      const telemetry = otelTelemetry({ provider, idGenerator, tracerVersion: VERSION });
       const forWorld = (world: World) => {
         let traced = worlds.get(world);
         if (!traced) {
