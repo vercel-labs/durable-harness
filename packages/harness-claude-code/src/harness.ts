@@ -234,6 +234,15 @@ export interface ClaudeCodeHarnessOptions {
   /** `query()`'s `maxTurns` (model round trips per turn). */
   maxTurns?: number;
   /**
+   * Claude Code settings, passed to `query()` as its flag settings: an
+   * object, such as `{ attribution: { commit: '', pr: '' } }`. They are the
+   * app's own (a hook here runs beside the CLI, outside Claude's sandbox).
+   * `sandbox` and `env` are a `TypeError`: the harness sets Claude Code's
+   * sandbox and the CLI's environment itself (`sandbox({ env })` adds
+   * variables). Default none.
+   */
+  settings?: Exclude<QueryOptions['settings'], string>;
+  /**
    * Run the CLI's commands without Claude Code's own sandbox where bubblewrap
    * doesn't work in the VM (with `builtins` on). Default false: such a drive
    * fails the turn with an `Unavailable`. Without that sandbox a command runs
@@ -299,6 +308,14 @@ export const CLAUDE_BUILTINS_OFF = [
 ];
 
 /**
+ * Settings keys `settings` may not carry: Claude Code's sandbox (the SDK
+ * merges `settings.sandbox` under the VM's sandbox settings, so a key those
+ * leave out would loosen it) and the CLI's environment (the model port, its
+ * key, the config dir) are the harness's.
+ */
+const SETTINGS_OWNED = ['sandbox', 'env'] as const;
+
+/**
  * `builtins: true`: the pinned allowlist, the tools Claude Code 2.1.296 has
  * (its `system/init` list, checked by a test) that act on `/workspace` and
  * whose state is in the transcript. The design's Glob, Grep and TodoWrite are
@@ -341,6 +358,16 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   const preset = builtins as { type?: unknown; preset?: unknown };
   if (preset.type === 'preset' && preset.preset === 'claude_code') return undefined;
   throw new TypeError("harness-world-claude-code: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
+}
+
+/** `settings`, checked: an object without the keys the harness owns. */
+function settingsOption(settings: ClaudeCodeHarnessOptions['settings']): ClaudeCodeHarnessOptions['settings'] {
+  if (settings === undefined) return undefined;
+  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw new TypeError('harness-world-claude-code: settings takes an object (a settings file path is not taken)');
+  for (const key of SETTINGS_OWNED) {
+    if (key in settings) throw new TypeError(`harness-world-claude-code: settings.${key} isn't taken: the harness sets Claude Code's sandbox and the CLI's environment itself (sandbox({ env }) adds variables)`);
+  }
+  return settings;
 }
 
 /**
@@ -401,6 +428,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
   const executable = options.executable ?? CLAUDE_VM_EXECUTABLE;
   const replay = typeof options.builtinReplay === 'function' ? options.builtinReplay : options.builtinReplay ? (name: string) => (options.builtinReplay as Record<string, ReplayPolicy>)[name] ?? claudeBuiltinReplay(name) : claudeBuiltinReplay;
   const providerTools = options.providerTools ?? [];
+  const settings = settingsOption(options.settings);
   const log = options.log ?? (() => {});
   let sdk: Promise<ClaudeAgentSdk> | undefined;
   const loadSdk = (): Promise<ClaudeAgentSdk> => {
@@ -688,6 +716,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
           ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+          ...(settings ? { settings } : {}),
           pathToClaudeCodeExecutable: executable,
           spawnClaudeCodeProcess: sandboxSpawn({
             machine,
