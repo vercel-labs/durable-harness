@@ -66,12 +66,12 @@ describe('Agent Runs from libfx hooks', () => {
     spans = exporter.getFinishedSpans().filter((s) => s.attributes['agent.run.id'] === SESSION);
   }, 30_000);
 
-  it('records one turn across the two executions, in the eve.agent scope', () => {
+  it('records one turn across the two executions, in the vercel.ai.tracing scope', () => {
     const turns = spans.filter((s) => s.name === 'invoke_agent fx-agent');
     expect(turns).toHaveLength(1);
     expect(turns[0]!.attributes).toMatchObject({ 'agent.turn.id': TURN, 'agent.turn.outcome': 'completed', 'agent.session.title': 'shout hi' });
     expect(new Set(spans.map((s) => s.spanContext().traceId)).size).toBe(1);
-    for (const span of spans) expect(span.instrumentationScope.name).toBe('eve.agent');
+    for (const span of spans) expect(span.instrumentationScope.name).toBe('vercel.ai.tracing');
   });
 
   it('records a step per model call, numbered by the execution that ran it', () => {
