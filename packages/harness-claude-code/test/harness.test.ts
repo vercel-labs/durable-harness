@@ -9,7 +9,7 @@ import { groupAlive, journalRecords, type SessionMachine, transcriptOf } from 'h
 import { FILES_LOST_NOTE, SANDBOX_DOC, type SandboxNetworkOption, sessionName } from 'harness-world-sandbox';
 import type { FakeSandboxApi } from 'harness-world-sandbox/testing/fake-api';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, claudeCodeHarness, claudeSandboxSettings, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
+import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF, type ClaudeCodeHarnessOptions, claudeCodeHarness, claudeSandboxSettings, DRIVE_NOTE, lostPrompts, NO_TOOLS_NOTE, protectedPath, TOOLS_NOTE } from '../src/harness.ts';
 import { uuidFrom } from '../src/ids.ts';
 import { CLAUDE_STREAM, JournalSessionStore, type TranscriptLine, toolUseIds } from '../src/store.ts';
 import { type FakeSdk, fakeSdk } from './fake-sdk.ts';
@@ -83,6 +83,8 @@ async function session(
     api?: FakeSandboxApi;
     /** `sandbox({ network })` (default `allow-all`). */
     network?: SandboxNetworkOption;
+    /** More harness options, as given. */
+    options?: Partial<ClaudeCodeHarnessOptions>;
   } = {}
 ) {
   const world = createWorld({ dataDir, recoverActiveRuns: opts.recover ?? false });
@@ -102,6 +104,7 @@ async function session(
       // The stand-in VM is this machine: no bubblewrap on macOS.
       unsandboxedCommands: true,
       ...(opts.idleMs ? { idleMs: opts.idleMs } : {}),
+      ...opts.options,
     }),
     ...(opts.chaos ? { chaos: true, crash: opts.crash ?? (() => {}) } : {}),
   });
@@ -454,6 +457,24 @@ describe('claudeCodeHarness defaults (scripted SDK)', () => {
     expect(opts).toMatchObject({ tools: [], allowedTools: [] });
     expect(opts.mcpServers).toBeUndefined();
     expect(opts.systemPrompt.append).toBe(NO_TOOLS_NOTE);
+  });
+});
+
+describe('claudeCodeHarness query options (scripted SDK)', () => {
+  it("passes effort to query(), and leaves it to the CLI's default without one", async () => {
+    const sdk = fakeSdk();
+    const a = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), sdk, { options: { effort: 'high' } });
+    const { sessionId } = await a.sessions.start();
+    await a.sessions.send(sessionId, 'hello');
+    await waitTurns(a.sessions, sessionId, 1);
+    expect(sdk.queries[0]!.effort).toBe('high');
+
+    const plain = fakeSdk();
+    const b = await session(await mkdtemp(join(tmpdir(), 'hwcc-')), plain);
+    const other = await b.sessions.start();
+    await b.sessions.send(other.sessionId, 'hello');
+    await waitTurns(b.sessions, other.sessionId, 1);
+    expect('effort' in plain.queries[0]!).toBe(false);
   });
 });
 

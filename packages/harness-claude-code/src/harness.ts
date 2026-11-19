@@ -233,6 +233,8 @@ export interface ClaudeCodeHarnessOptions {
   idleMs?: number;
   /** `query()`'s `maxTurns` (model round trips per turn). */
   maxTurns?: number;
+  /** `query()`'s `effort`: how much the model thinks (`low` to `max`), on a model that takes it. Default the CLI's. */
+  effort?: QueryOptions['effort'];
   /**
    * Run the CLI's commands without Claude Code's own sandbox where bubblewrap
    * doesn't work in the VM (with `builtins` on). Default false: such a drive
@@ -688,6 +690,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
           ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+          ...(options.effort ? { effort: options.effort } : {}),
           pathToClaudeCodeExecutable: executable,
           spawnClaudeCodeProcess: sandboxSpawn({
             machine,

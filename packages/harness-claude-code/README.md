@@ -180,6 +180,7 @@ one in the tests (`test/fixtures/golden-2.1.289.json`).
 | `coalesceMs` | 150 | How long mirrored lines are held so they share journal batches |
 | `idleMs` | 0 | Keep the child this long after a turn for a follow-up |
 | `maxTurns` | | `query()`'s `maxTurns` |
+| `effort` | the CLI's | `query()`'s `effort` (`low`, `medium`, `high`, `xhigh`, `max`), on a model that takes it |
 | `unsandboxedCommands` | `false` | Run the built-ins' commands without Claude's sandbox where bubblewrap doesn't work (the key is then only a correlation id); the stand-in VM's tests. `durable-harness` refuses it |
 | `log` | | Diagnostics |
 
