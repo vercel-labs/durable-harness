@@ -185,7 +185,9 @@ export async function startRelay(overrides: Partial<RelayConfig> = {}): Promise<
     kill,
     stop: async () => {
       await kill();
-      rmSync(dir, { recursive: true, force: true });
+      // A command the relay started can outlive its SIGKILL for a moment and
+      // still be writing under `dir` (ENOTEMPTY): rmSync retries those.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }

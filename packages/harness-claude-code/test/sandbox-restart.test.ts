@@ -599,12 +599,18 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
     let release!: () => void;
     const stuck = new Promise<void>((r) => (release = r));
     let asked = 0;
-    script = respond([
-      [
-        'Append a line',
-        () => (++asked === 1 ? { hold: stuck, then: { tool: { name: 'Bash', input: { command: 'echo zombie >> lines.txt', description: 'append' } } } } : { tool: { name: 'Bash', input: { command: 'echo owner >> lines.txt', description: 'append' } } }),
-      ],
-    ]);
+    const append = (word: string): FakeReply => ({ tool: { name: 'Bash', input: { command: `echo ${word} >> lines.txt`, description: 'append' } } });
+    // The takeover can land before or after A's CLI put the prompt in the log, and a later delivery
+    // (in either process) can take the turn over from B in turn: then the drive that resumes the turn
+    // asks with a recovery note as the last user message, which lists every call the log has. So the
+    // prompt is looked for in the whole conversation, and the model does what the note asks: it appends
+    // unless the conversation says the append ran.
+    script = (r) => {
+      if (hasResults(r)) return { text: `Result: ${Object.values(r.results).join(' | ').trim() || 'empty'}` };
+      if (!r.text.includes('Append a line')) return { text: 'ok' };
+      if (++asked === 1) return { hold: stuck, then: append('zombie') };
+      return JSON.stringify(r.messages).includes('echo owner >> lines.txt') ? { text: 'The line is there.' } : append('owner');
+    };
     const from = model.requests.length;
     const machines: SessionMachine[] = [];
     const a = await invocation(dataDir, api, model, { onAttach: (m) => void machines.push(m) });
@@ -633,10 +639,13 @@ describe.runIf(!!executable)('restart on a new sandbox: the real Agent SDK and t
     expect(readFileSync(join(drive, 'lines.txt'), 'utf8')).toBe('owner\n');
     expect(bashCalls(after).map((e) => commandOf(e))).toEqual(['echo owner >> lines.txt']);
     expect(refused(from, model)).toEqual([]);
-    // B armed with the higher fence; A, rebuilt when its CLI died, never armed again (the World refused its drive first; the relay refuses a lower fence's arm: harness-sandbox's session tests).
+    // B armed with a higher fence; A's drive, rebuilt when its CLI died, never armed again (the World refused its drive first; the relay refuses a lower fence's arm: harness-sandbox's session tests).
+    // A fence is one delivery's for its whole invocation, so a re-arm by A's drive would repeat A's; a later delivery that lands in
+    // A's process (the queue picks either) arms with a fence of its own, above B's.
     const fences = (inv: Invocation) => inv.logs.filter((l) => l.message === 'attached').map((l) => l.fields?.fence as number);
-    expect(fences(a)).toHaveLength(1);
-    expect(Math.min(...fences(b))).toBeGreaterThan(fences(a)[0]!);
+    const zombieFence = fences(a)[0]!;
+    expect([...fences(a), ...fences(b)].filter((f) => f === zombieFence)).toEqual([zombieFence]);
+    expect(Math.min(...fences(b), ...fences(a).slice(1))).toBeGreaterThan(zombieFence);
     expect(a.failed).toEqual([]);
   }, 180_000);
 
