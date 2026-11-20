@@ -77,10 +77,10 @@ with pi-durable, fx, the AI SDK, Claude Code, Codex, OpenCode) with scripted
 models on world-local, through durable-harness's `agentRuns()`
 (`durable-harness/instrumentation/otel`, on `@vercel/agent-runs`) with an
 in-memory span processor. It checks each turn's spans as Vercel Agent Runs
-reads them: the `invoke_agent` root in the `eve.agent` scope at schema 4, an
-`agent.step` per model call with its `chat` span and the tool calls it asked
-for under it, all in the turn's trace, and a tool span carrying the id of the
-call the model's reply names (Agent Runs joins the two by it)
+reads them: the `invoke_agent` root in the `vercel.ai.tracing` scope at
+schema 4, an `agent.step` per model call with its `chat` span and the tool
+calls it asked for under it, all in the turn's trace, and a tool span carrying
+the id of the call the model's reply names (Agent Runs joins the two by it)
 (`src/agent-runs.ts`). That a session that is not public records only
 metadata is durable-harness's own `test/agent-runs.test.ts`.
 

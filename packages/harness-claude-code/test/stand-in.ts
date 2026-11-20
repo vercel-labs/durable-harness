@@ -7,9 +7,9 @@
  * machine it hands out is branded by the factory's test seam, so the harness
  * accepts it; nothing here is published.
  */
-import { kernelSandbox, sandboxSession } from 'harness-world-sandbox';
+import { kernelSandbox, type SandboxNetworkOption, sandboxSession } from 'harness-world-sandbox';
 import { FakeSandboxApi } from 'harness-world-sandbox/testing/fake-api';
-import type { ClaudeSandbox, ClaudeSandboxNetwork } from '../src/harness.ts';
+import type { ClaudeSandbox } from '../src/harness.ts';
 
 export interface StandIn {
   api: FakeSandboxApi;
@@ -18,7 +18,7 @@ export interface StandIn {
 
 export interface StandInOptions {
   api?: FakeSandboxApi;
-  network?: ClaudeSandboxNetwork;
+  network?: SandboxNetworkOption;
   budget?: { turnUsd: number; sessionUsd: number };
   env?: Record<string, string>;
   commandTimeoutMs?: number;

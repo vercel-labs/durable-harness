@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./machine-brand": "./src/machine-brand.ts",
+    "./network": "./src/network.ts",
     "./records": "./src/records.ts",
     "./reference": "./reference/harness.ts",
     "./reference/fake-model": "./reference/fake-model.ts"
@@ -19,7 +20,7 @@
     "@vercel/oidc": "3.2.0",
     "@workflow/world": "catalog:",
     "harness-world": "workspace:*",
-    "@vercel/agent-runs": "0.0.1"
+    "@vercel/agent-runs": "1.1.0"
   },
   "devDependencies": {
     "@workflow/world-local": "catalog:",

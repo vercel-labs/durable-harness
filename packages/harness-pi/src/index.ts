@@ -47,6 +47,12 @@ export interface PiHarnessOptions {
    * interrupted call; it defaults to `'never'`.
    */
   tools?: (AgentTool<any> | HostTool)[];
+  /**
+   * Default `'off'`, which asks the provider to disable thinking. Some
+   * reasoning models refuse that on some providers: `alibaba/qwen3.8-max`
+   * routed to Fireworks fails every request that offers tools with
+   * "Disabling thinking is not supported". Set a level (`'medium'`) for them.
+   */
   thinkingLevel?: ThinkingLevel;
   /** Attempts per model call when the provider returns an error. */
   modelAttempts?: number;
@@ -133,6 +139,13 @@ class PiDrive {
   private readonly afterDrive = new Set<(ctx: DriveContext) => Promise<void>>();
   /** Submissions handed to Pi but not yet placed by a model step. */
   private handed = new Map<string, Submission>();
+  /**
+   * Every submission this drive handed to Pi, placed or not. A model call
+   * claims its submissions before its intent (which places them) commits, so
+   * an inbox read in between still finds them pending: they must not be
+   * handed to Pi a second time.
+   */
+  private given = new Set<string>();
 
   constructor(
     private readonly options: PiHarnessOptions,
@@ -224,9 +237,9 @@ class PiDrive {
       this.throwIfStopped();
       for (;;) {
         await this.ctx.refresh();
-        const next = this.ctx.pending().filter((s) => !this.handed.has(s.id));
+        const next = this.ctx.pending().filter((s) => !this.given.has(s.id));
         if (next.length === 0) break;
-        for (const s of next) this.handed.set(s.id, s);
+        for (const s of next) this.hand(s);
         this.turnStart = true;
         await this.agent.prompt(next.map((s) => userMessage(s)));
         this.throwIfStopped();
@@ -258,8 +271,8 @@ class PiDrive {
       return;
     }
     for (const s of this.ctx.pending()) {
-      if (this.handed.has(s.id)) continue;
-      this.handed.set(s.id, s);
+      if (this.given.has(s.id)) continue;
+      this.hand(s);
       // Pi's own semantics: steering lands at the next model boundary,
       // follow-ups (and prompts sent mid-run) when the agent would stop.
       if (s.kind === 'steer') this.agent.steer(userMessage(s));
@@ -379,6 +392,11 @@ class PiDrive {
       if (d && Number.isSafeInteger(d.at) && typeof d.text === 'string') shown.set(d.at, d.text);
     }
     return shown;
+  }
+
+  private hand(s: Submission): void {
+    this.given.add(s.id);
+    this.handed.set(s.id, s);
   }
 
   private claimSubmission(message: Message): string[] {

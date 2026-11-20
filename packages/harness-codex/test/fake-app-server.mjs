@@ -25,7 +25,9 @@
  * `commandExecution`, an approval request that blocks, then a login shell,
  * `item/completed` with its output);
  * `patch <path> <content>` is a built-in `apply_patch` (a `fileChange` item
- * and its approval); a `[Recovery]` message is acknowledged; anything else
+ * and its approval); `foreign [custom] <tool>` is a tool Codex answers
+ * itself (a `function_call` or `custom_tool_call` and its output in the
+ * rollout, nothing else); a `[Recovery]` message is acknowledged; anything else
  * is echoed. A message that starts with an `[Environment]` note is read
  * without it. `FAKE_CODEX_TYPE_MS` slows its typing, `FAKE_CODEX_THINK_MS` its
  * model call after a tool returns and before an echo; `FAKE_CODEX_LOG`
@@ -226,6 +228,7 @@ async function runTurn(turnId, clientId, text) {
   const stdin = /^stdin\s+([\s\S]+)$/.exec(trimmed);
   const shell = /^shell\s+([\s\S]+)$/.exec(trimmed) ?? escalate ?? stdin;
   const patch = /^patch\s+(\S+)\s+([\s\S]*)$/.exec(trimmed);
+  const foreign = /^foreign\s+(?:(custom)\s+)?(\w+)$/.exec(trimmed);
   // `FAKE_CODEX_TAMPER=shrink|replace`: every turn tampers (a model under danger-full-access that keeps at it).
   const tamper = /^tamper\s+(shrink|replace)$/.exec(trimmed) ?? (process.env.FAKE_CODEX_TAMPER ? [null, process.env.FAKE_CODEX_TAMPER] : null);
   const lag = process.env.FAKE_CODEX_LAG === '1';
@@ -320,6 +323,14 @@ async function runTurn(turnId, clientId, text) {
     }
     last = `${shell ? 'shell' : 'apply_patch'} ${done.status}: ${output.slice(0, 200)}`;
     await sleep(thinkMs);
+    await say(turnId, last);
+  } else if (foreign) {
+    // A tool Codex answers itself (code mode's `exec`, a sub-agent tool): its call and output in the rollout, no item notification, no request.
+    const [, custom, name] = foreign;
+    const callId = `call_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+    write('response_item', custom ? { type: 'custom_tool_call', name, input: 'text("hi")', call_id: callId, status: 'completed' } : { type: 'function_call', name, arguments: '{}', call_id: callId });
+    write('response_item', { type: custom ? 'custom_tool_call_output' : 'function_call_output', call_id: callId, output: `unsupported call: ${name}` });
+    last = `${name}: unsupported call`;
     await say(turnId, last);
   } else if (trimmed.startsWith('[Recovery]')) {
     last = 'Recovered from the log. I will check the actual state before repeating anything.';

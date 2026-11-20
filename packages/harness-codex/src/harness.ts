@@ -10,12 +10,15 @@ import {
   type GatewayLedger,
   gatewayCredential,
   gatewayHandler,
+  gatewayNetwork,
   gatewayUrl,
   isBrandedMachine,
+  type MachineNetworkOption,
   type MachineTail,
   ModelSteps,
   Mutex,
   NativeJournal,
+  networkSummary,
   placeSubmissions,
   recoveryNote,
   restartEvent,
@@ -33,6 +36,7 @@ import { AppServer, type RpcNotification, type RpcServerRequest } from './app-se
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.ts';
 import {
   callIdOf,
+  callOf,
   endsTurn,
   isRolloutPath,
   isSessionMeta,
@@ -182,8 +186,13 @@ export interface CodexMachine {
   acquire: AcquireMachine;
   /** `sandbox({ env })`: non-secret variables for app-server and for the model's commands (`shell_environment_policy.set`). */
   env?: Readonly<Record<string, string>>;
-  /** `sandbox({ network })`: the gateway handler refuses what would reach past it through the provider. Default `allow-all`. */
-  network?: 'allow-all' | 'deny-all' | { readonly allow: readonly string[] };
+  /**
+   * `sandbox({ network })` (a shorthand, a full policy, or a per-session
+   * callback; the session factory applies it): the gateway handler refuses
+   * what would reach past it through the provider, by its summary
+   * (`networkSummary`; a callback's from the attached machine). Default `allow-all`.
+   */
+  network?: MachineNetworkOption;
   /** `sandbox({ budget })`'s dollar caps, over the turn and the session (each response's cost is in the log). Default none (`Infinity`). */
   budget?: { readonly turnUsd?: number; readonly sessionUsd?: number };
   /** `sandbox({ commandTimeoutMs })`: a built-in command's longest run, within the time left in the invocation. */
@@ -207,6 +216,9 @@ const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-acce
 
 /** Codex's command actions that only read: a command made of these alone is `safe` (the note says "safe to repeat"). */
 const READ_ACTIONS = new Set(['read', 'listFiles', 'search']);
+
+/** Codex 0.160's names for the built-ins `BUILTINS_ON` enables, as its rollout calls them. */
+const BUILTIN_TOOL_NAMES: readonly string[] = ['exec_command', 'write_stdin', 'apply_patch', 'view_image'];
 
 /** A Codex item's replay policy: a command whose every action reads is `safe`; any other command, and every patch, `never`. */
 export function codexItemReplay(item: { type?: string; commandActions?: { type?: string }[] }): ReplayPolicy {
@@ -380,7 +392,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   const tools = options.tools ?? [];
   const spec = options.machine;
   const codex = options.test ? { command: options.test.command, args: options.test.args ?? [] } : { command: cliPath(CODEX_CLI), args: [] as string[] };
-  const network = spec?.network === undefined || spec.network === 'allow-all' ? 'allow-all' : spec.network === 'deny-all' ? 'deny-all' : 'custom';
+  // The descriptor's network as a summary; a per-session callback's is known once the attach resolved it (the machine's).
+  const staticNetwork = networkSummary(spec?.network);
   const budget = { turnUsd: spec?.budget?.turnUsd ?? Infinity, sessionUsd: spec?.budget?.sessionUsd ?? Infinity };
   /** Nothing left to do: no turn a crash cut off, nothing in the inbox. */
   const idle = (ctx: DriveContext) => !recoveryNote(ctx.state()) && ctx.pending().length === 0;
@@ -446,7 +459,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       models: { model },
       budget,
       ledger,
-      network,
+      // Read per request: the model calls come over the attached machine, which says what its attach applied.
+      network: () => gatewayNetwork(machine?.network ?? staticNetwork),
       credential: () => inDrive(credential),
       target: options.gatewayUrl ?? gatewayUrl(),
       track: steps.request,
@@ -456,7 +470,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
       ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`codex gateway: ${message}`, fields) } : {}),
     });
-    let machine: SessionMachine;
+    let machine: SessionMachine | undefined;
     try {
       machine = await attachInDrive(ctx, spec.acquire, { model: handler, deadline });
     } catch (err) {
@@ -570,6 +584,17 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       let turnEnds = 0;
       let stream = '';
       let threadId = '';
+      /**
+       * The tools the harness accounts for: the app's (dynamic tools, each an
+       * effect), `request_user_input` (Codex answers it "unavailable in
+       * Default mode"), and with the built-ins on the ones `BUILTINS_ON`
+       * enables (a command or a patch is an effect; `write_stdin` and
+       * `view_image` go with them). Anything else in the rollout is a tool
+       * Codex offered on its own, which the harness never sees run: code
+       * mode's `exec`, its sub-agent tools, a stray `apply_patch` with the
+       * built-ins off (refused by Codex, or declined below).
+       */
+      const owned = new Set([...bridge.tools.map((t) => t.name), 'request_user_input', ...(builtinsOn ? BUILTIN_TOOL_NAMES : [])]);
       /** The calls whose `function_call` (or `custom_tool_call`) line is in the log: what the barrier looks for. */
       const logged = new Set<string>();
       for (const line of lines) {
@@ -608,8 +633,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         for (const line of fresh) {
           if (!line) continue;
           journal.append(stream, line);
-          const id = callIdOf(line);
-          if (id) logged.add(id);
+          const call = callOf(line);
+          if (call) {
+            logged.add(call.callId);
+            // A tool Codex answered itself, with no item notification the drive sees: one line, its name and call id, never its arguments.
+            if (!owned.has(call.name)) log('codex: the model called a tool the harness neither runs nor journals (Codex answered it itself)', { tool: call.name.slice(0, 64), callId: call.callId.slice(0, 64) });
+          }
           if (endsTurn(line)) turnEnds++;
         }
       };

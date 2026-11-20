@@ -452,6 +452,57 @@ describe('the OpenCode drive', () => {
     expect(a.errors).toEqual([]);
   });
 
+  it('a prompt or follow-up sent mid-turn waits for the turn to end, then is admitted (queued, not steered) as a turn of its own', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'oc-fake-'));
+    const admitted: Extract<ToHost, { type: 'prompt' }>[] = [];
+    let duringFirst: ToHost['type'][] = [];
+    let first!: () => void;
+    const running = new Promise<void>((r) => (first = r));
+    let sent!: () => void;
+    const both = new Promise<void>((r) => (sent = r));
+    const finish = async (h: FakeHost, text: string) => {
+      await h.request({ type: 'barrier', kind: 'primary' });
+      h.commit(['session.step.started'], ['session.text.ended', { text }], ['session.step.ended'], ['session.execution.succeeded']);
+    };
+    const script: Script = async (h) => {
+      open(h);
+      await admit(h);
+      first();
+      // The turn runs on while both are sent and the drive has read its inbox (a hint, then its poll).
+      await both;
+      await new Promise((r) => setTimeout(r, 1800));
+      duringFirst = h.inbound.map((m) => m.type);
+      await finish(h, 'First.');
+      admitted.push(await admit(h));
+      await finish(h, 'Second.');
+      admitted.push(await admit(h));
+      await finish(h, 'Third.');
+      await h.take('close');
+    };
+    const a = await session(dataDir, [script]);
+    const { sessionId } = await a.sessions.start({ prompt: 'do one thing' });
+    await running;
+    const prompt = await a.sessions.send(sessionId, 'and then this');
+    const followUp = await a.sessions.send(sessionId, 'and this too', 'followUp');
+    sent();
+    const state = await waitTurns(a.sessions, sessionId, 3);
+    // Nothing reached OpenCode while the first turn ran.
+    expect(duringFirst).not.toContain('prompt');
+    expect(admitted).toMatchObject([
+      { delivery: 'queue', text: 'and then this', messageId: `msg_${prompt}` },
+      { delivery: 'queue', text: 'and this too', messageId: `msg_${followUp}` },
+    ]);
+    expect(transcriptOf(state).map((r) => r.data)).toEqual([
+      { type: 'message', role: 'assistant', text: 'First.' },
+      { type: 'turn', status: 'completed' },
+      { type: 'message', role: 'assistant', text: 'Second.' },
+      { type: 'turn', status: 'completed' },
+      { type: 'message', role: 'assistant', text: 'Third.' },
+      { type: 'turn', status: 'completed' },
+    ]);
+    expect(a.errors).toEqual([]);
+  });
+
   it('a refused journal write halts the drive and stops the host', async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'oc-fake-'));
     let host!: FakeHost;

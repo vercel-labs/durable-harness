@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import { isModelRequest, ResponseCapture } from './agent-runs.ts';
 import type { GatewayErrorCode, GatewayHandler } from './environment.ts';
+import type { GatewayNetwork } from './network.ts';
 
 /**
  * AI Gateway credentials for process harnesses: a fresh credential per call,
@@ -309,8 +310,13 @@ export interface GatewayHandlerOptions {
   ledger: GatewayLedger;
   /** Provider-hosted tools the app opted into. Default none. */
   providerTools?: readonly ProviderTool[];
-  /** The VM's network: provider-hosted tools are refused under `deny-all`, whatever `providerTools` says. */
-  network?: 'allow-all' | 'deny-all' | 'custom';
+  /**
+   * The VM's network: provider-hosted tools are refused under `deny-all`,
+   * whatever `providerTools` says, and provider-side fetches allowed only
+   * under `allow-all`. A function is read at each request (a per-session
+   * policy is known once the attach resolved it: `gatewayNetwork(machine.network)`).
+   */
+  network?: GatewayNetwork | (() => GatewayNetwork);
   /** Clamp output-token limits to this. Default 128 000. */
   maxOutputTokens?: number;
   /** Default `gatewayCredential`, called per request. */
@@ -783,17 +789,98 @@ export function parseStrictJson(bytes: Uint8Array): unknown {
   return out;
 }
 
-/** The Gateway's own cost figure for a response (P0.18: `provider_metadata.gateway`, in the JSON body or the stream's last events). */
-const GATEWAY_COST = /"gatewayCost"\s*:\s*"?(\d+(?:\.\d+)?)"?/g;
-const PLAIN_COST = /"gateway"\s*:\s*\{[^]*?"cost"\s*:\s*"?(\d+(?:\.\d+)?)"?/g;
-function costOf(text: string): number | undefined {
-  const last = (re: RegExp) => {
-    let found: number | undefined;
-    for (const m of text.matchAll(re)) found = Number(m[1]);
-    return found;
-  };
-  const usd = last(GATEWAY_COST) ?? last(PLAIN_COST);
-  return usd !== undefined && Number.isFinite(usd) && usd >= 0 ? usd : undefined;
+const asRecord = (v: unknown): Record<string, unknown> | undefined => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+const tryJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+/** A cost the Gateway wrote, as a JSON number or a numeric string (exponents included); anything else, or a negative, is no figure. */
+const COST_STRING = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+function usdOf(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && COST_STRING.test(v.trim()) ? Number(v.trim()) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** The `gateway` entry of an object's provider metadata (`provider_metadata` on the Anthropic and OpenAI routes, `providerMetadata` on the AI SDK's). */
+function gatewayMetaOf(meta: unknown): Record<string, unknown> | undefined {
+  return asRecord(asRecord(meta)?.gateway);
+}
+
+/** The Gateway metadata of one parsed body or stream event: at its top level, or on its `response` / `message` (the stream events that wrap one). */
+function gatewayMetasOf(value: unknown): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const top = asRecord(value);
+  for (const holder of [top, asRecord(top?.response), asRecord(top?.message)]) {
+    for (const meta of [holder?.provider_metadata, holder?.providerMetadata]) {
+      const g = gatewayMetaOf(meta);
+      if (g) out.push(g);
+    }
+  }
+  return out;
+}
+
+/** Where the `{ ... }` starting at `start` ends (its closing brace's index), reading strings so a brace inside one is not counted; -1 if it never closes. */
+function objectEnd(text: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++;
+    } else if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
+      if (--depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The Gateway metadata at the top level of a JSON body whose start is cut
+ * off (a response longer than `Seen.window`): the last metadata key whose
+ * object parses and after which the text closes exactly the body. A key
+ * nested in the content (a tool's input, say) closes more than that, and
+ * one inside a string is escaped, so neither is read.
+ */
+const META_KEY = /(?<!\\)"(?:provider_metadata|providerMetadata)"\s*:\s*(?=\{)/g;
+function tailGatewayMeta(text: string): Record<string, unknown>[] {
+  const starts = [...text.matchAll(META_KEY)].map((m) => m.index + m[0].length);
+  for (const start of starts.reverse()) {
+    const end = objectEnd(text, start);
+    if (end < 0) continue;
+    const g = gatewayMetaOf(tryJson(text.slice(start, end + 1)));
+    if (g && tryJson(`{"_":0${text.slice(end + 1)}`) !== undefined) return [g];
+  }
+  return [];
+}
+
+/**
+ * The Gateway's own cost figure for a response (P0.18:
+ * `provider_metadata.gateway`, in the JSON body or the stream's last
+ * events), read from the parsed JSON: `gatewayCost`, else `cost`, from the
+ * last body or event that has one. `text` is the response's tail, so a
+ * stream's first event may be cut (and is skipped). Undefined when no
+ * figure parses: the caller charges an estimate instead.
+ */
+export function costOf(text: string): number | undefined {
+  const trimmed = text.trim();
+  const whole = tryJson(trimmed);
+  let metas: Record<string, unknown>[];
+  if (whole !== undefined) metas = gatewayMetasOf(whole);
+  else if (/^data:/m.test(text)) {
+    metas = [];
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data.startsWith('{')) metas.push(...gatewayMetasOf(tryJson(data)));
+    }
+  } else metas = tailGatewayMeta(trimmed);
+  const last = (field: string) => metas.findLast((g) => field in g);
+  const g = last('gatewayCost') ?? last('cost');
+  return g ? usdOf('gatewayCost' in g ? g.gatewayCost : g.cost) : undefined;
 }
 
 /** What a response showed of itself: its first and last text (for `usage` and the cost), and how many bytes streamed. */
@@ -923,7 +1010,8 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
   }
   if (typeof options.models?.model !== 'string' || !options.models.model) throw new TypeError('harness-world-process gatewayHandler: `models.model` is required');
   const allowed = new Set([options.models.model, ...(options.models.smallModel ? [options.models.smallModel] : [])]);
-  const providerTools = new Set(options.network === 'deny-all' ? [] : (options.providerTools ?? []));
+  const network = (): GatewayNetwork | undefined => (typeof options.network === 'function' ? options.network() : options.network);
+  const optedIn = new Set(options.providerTools ?? []);
   const maxTokens = options.maxOutputTokens ?? 128_000;
   const credential = options.credential ?? gatewayCredential;
   const target = options.target ?? gatewayUrl();
@@ -942,14 +1030,16 @@ export function gatewayHandler(options: GatewayHandlerOptions): GatewayHandler {
       return id;
     },
     providerTool(tool) {
-      if (!providerTools.has(tool)) throw refuse('forbidden', `the provider-hosted tool ${tool} is not enabled${options.network === 'deny-all' ? " (network: 'deny-all')" : ''}`);
+      const denied = network() === 'deny-all';
+      if (denied || !optedIn.has(tool)) throw refuse('forbidden', `the provider-hosted tool ${tool} is not enabled${denied ? " (network: 'deny-all')" : ''}`);
     },
     clampTokens(value) {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw refuse('bad_request', 'an output token limit must be a positive integer');
       return Math.min(value, maxTokens);
     },
     fetches(what) {
-      if (options.network !== 'allow-all') throw refuse('forbidden', `${what} makes the provider fetch it, which the session's network (${options.network ?? 'unset'}) doesn't allow`);
+      const now = network();
+      if (now !== 'allow-all') throw refuse('forbidden', `${what} makes the provider fetch it, which the session's network (${now ?? 'unset'}) doesn't allow`);
     },
   };
 

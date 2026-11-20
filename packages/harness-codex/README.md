@@ -36,6 +36,21 @@ every other harness here: `durableSessions({ world, harness })`, then
   on** next to them, each call in the log before it runs (see
   [Tools](#tools)), and `view_image` (a read). Image generation, web
   search, sub-agents and plugins stay off either way.
+  Newer model families (gpt-5.6-sol, gpt-6-sol, gpt-6-astra and others)
+  are code-mode-only: Codex would offer their tools nested under code
+  mode's `exec`, whose calls never reach the rollout with their own
+  `call_id`. The harness keeps Codex's `functions` namespace direct
+  (`features.code_mode.direct_only_tool_namespaces`), so your tools are
+  offered as plain functions and each call keeps the rollout `call_id` its
+  effect is keyed by and its log barrier looks for. Codex still offers
+  these models some tools of its own that the harness turns off, and none
+  of them can run: code mode's `exec` (it fails: the nested code-mode host
+  is off) and its sub-agent `collaboration` tools (Codex refuses them:
+  "unsupported call"). With the built-ins off, `apply_patch` is not offered
+  (each turn has no environment); a call to it anyway is refused by Codex,
+  and a patch approval would be declined by the harness: nothing is
+  written. A call to a tool the harness neither runs nor journals is logged
+  (`log`) with its name and call id, never its arguments.
 - **Codex's thread is mirrored into the log.** Codex keeps a thread as an
   append-only JSONL file, the rollout. Every line it writes becomes a record
   of the session's native journal (group-committed record-only effects),
@@ -146,7 +161,11 @@ and the drive answers only once the call's intent is in the log.
 
 `durable-harness/codex` resolves `workspace: sandbox()` (the default) into
 the sandbox tier's session factory, and passes the descriptor's `env`,
-`network`, `budget` and `commandTimeoutMs` on as `machine`:
+`network`, `budget` and `commandTimeoutMs` on as `machine`. The session
+factory applies `network` (a shorthand, a full `NetworkPolicy` or a
+per-session callback) to the VM on every attach; the harness reads only its
+mode, from the attached machine, to decide what the gateway lets the
+provider fetch:
 
 ```ts
 // lib/agent.ts
@@ -210,6 +229,17 @@ the same live stream. Sends go to the server, which drives.
 
 `sandbox`, `host`, `cwd`, `bin`, `env`, `keepSessionDir` and `workspaceNote`
 are gone and throw, naming what replaced them.
+
+### Models
+
+Codex's requests carry its base instructions and developer messages of its
+own (and `instructions`, as one more), and they keep the model's reasoning in
+the conversation. Some providers refuse that combination: with
+`alibaba/qwen3.8-max`, which the Gateway routes to Fireworks, the request after
+the first tool call fails with "System message must be at the beginning", and
+the turn ends failed. Leaving `instructions` unset doesn't avoid it, because
+Codex adds a developer message of its own. Use another model with Codex until
+the Gateway accepts these requests for it.
 
 ## What a crash costs
 

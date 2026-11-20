@@ -403,6 +403,13 @@ describe('virtualEnv(): pi-durable CodingTools on a virtual workspace (world-loc
     expect(() => virtualEnv({ store: 'blob' } as never)).toThrow(/store/);
     expect(() => sandboxEnv(virtual() as never)).toThrow(/virtualEnv\(\)/);
   });
+
+  it("sandboxEnv() takes sandbox()'s full network policy and a per-session callback, and checks a static one when it is built", () => {
+    const transform = { allow: { 'api.github.com': [{ transform: [{ headers: { authorization: 'Bearer x' } }] }] } };
+    expect(() => sandboxEnv({ network: transform })).not.toThrow();
+    expect(() => sandboxEnv({ network: async () => transform })).not.toThrow();
+    expect(() => sandboxEnv({ network: { allow: { 'api.github.com': [{ transform: [] }] } } as never })).toThrow(/transform must be a non-empty list/);
+  });
 });
 
 // pi-durable's own conformance suite, on the environment `virtualEnv()` gives each call (over a fresh machine per case).

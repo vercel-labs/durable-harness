@@ -15,7 +15,7 @@ export { baseName, baseRecipe, CLAUDE_CLI, cliPath, CODEX_CLI, devRelayArtifact,
 export type { BaseRecipe, PinnedCli, PrepareBaseOptions, RelayArtifact } from './base.ts';
 export { defaultRegion, sessionName } from './names.ts';
 export { acknowledgeInDrive, acknowledgeNotes, attachInDrive, FILES_LOST_NOTE, kernelSandbox, networkPolicy, parseArmReply, SANDBOX_DOC, SandboxBudgetExceeded, SandboxLost, sandboxSession } from './session.ts';
-export type { KernelSandbox, SandboxSessionOptions, SandboxSpec } from './session.ts';
+export type { KernelSandbox, SandboxNetworkOption, SandboxNetworkSession, SandboxNetworkValue, SandboxSessionOptions, SandboxSpec } from './session.ts';
 export { DRIVE_FILES_DOC, DRIVE_FILES_EVENT, DRIVE_MANIFEST_LIMITS, DRIVE_ROOT, DriveFiles, driveManifestBehind, listDrive, mutatingCalls, readDriveManifest, SKIPPED_DIRS } from './files.ts';
 export type { DriveEntry, DriveFile, DriveFilesEvent, DriveFilesOptions, DriveManifest, DriveReader, DriveSnapshot, ListDriveOptions } from './files.ts';
 export { modelTunnel } from './tunnel.ts';

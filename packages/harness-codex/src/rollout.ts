@@ -146,12 +146,17 @@ export function summarizeRollout(lines: readonly string[]): RolloutSummary {
   };
 }
 
-/** The call id of a `function_call` or `custom_tool_call` line, if the line is one. */
-export function callIdOf(line: string): string | undefined {
+/** The call id and tool name of a `function_call` or `custom_tool_call` line, if the line is one. */
+export function callOf(line: string): { callId: string; name: string } | undefined {
   if (!line.includes('call_id') || (!line.includes('function_call') && !line.includes('custom_tool_call'))) return undefined;
   const l = parseLine(line);
   const p = l?.payload;
-  return l?.type === 'response_item' && p && (p.type === 'function_call' || p.type === 'custom_tool_call') && typeof p.call_id === 'string' ? p.call_id : undefined;
+  return l?.type === 'response_item' && p && (p.type === 'function_call' || p.type === 'custom_tool_call') && typeof p.call_id === 'string' ? { callId: p.call_id, name: String(p.name ?? '') } : undefined;
+}
+
+/** The call id of a `function_call` or `custom_tool_call` line, if the line is one. */
+export function callIdOf(line: string): string | undefined {
+  return callOf(line)?.callId;
 }
 
 /** Whether the rollout has a `function_call` line for this call. */

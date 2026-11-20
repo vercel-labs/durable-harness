@@ -337,6 +337,7 @@ async function streamed(ctx: DriveContext, model: LanguageModelV4, params: Langu
       case 'tool-input-delta':
       case 'tool-input-end':
       case 'raw':
+      case 'ping':
         break;
       case 'finish':
         finish = { finishReason: value.finishReason, usage: value.usage, ...(value.providerMetadata ? { providerMetadata: value.providerMetadata } : {}) };

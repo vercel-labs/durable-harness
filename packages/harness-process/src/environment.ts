@@ -1,5 +1,6 @@
 import type { ChaosKind, Drill, DrillTarget, DriveFence } from 'harness-world';
 import type { WorkspaceMachine } from 'harness-world-hands/runtime';
+import type { MachineNetwork } from './network.ts';
 
 /**
  * Where a process harness's CLI runs, as types (docs/workspaces.md §3.1,
@@ -253,6 +254,14 @@ export interface SessionMachine {
    * there are no notes.
    */
   readonly notesKey?: string;
+  /**
+   * The network policy this attach applied (`sandbox({ network })`, a
+   * per-session callback's result included), reduced by `networkSummary` to
+   * its mode and the domains it names: never its rules, so no header value.
+   * Undefined when the attach applied none (a token that is not fenced) or
+   * the machine is a stand-in's: read the descriptor's then.
+   */
+  readonly network?: MachineNetwork;
   /** Start a process in the session's cgroup, as the unprivileged user. Rejects with a `TypeError` for an `env` the checks refuse (`MachineSpawn.env`). */
   spawn(options: MachineSpawn): Promise<SessionProcess>;
   /** The session's cache files (`FILES`, `WIPE`). */

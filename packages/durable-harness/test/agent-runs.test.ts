@@ -91,10 +91,10 @@ describe('Agent Runs with @vercel/agent-runs', () => {
     }
   }, 60_000);
 
-  it('writes the spans Agent Runs reads: the eve.agent scope at schema 4, keyed by the session', () => {
+  it('writes the spans Agent Runs reads: the vercel.ai.tracing scope at schema 4, keyed by the session', () => {
     expect(first.spans.length).toBeGreaterThan(0);
     for (const span of first.spans) {
-      expect(span.instrumentationScope.name).toBe('eve.agent');
+      expect(span.instrumentationScope.name).toBe('vercel.ai.tracing');
       expect(span.attributes['agent.trace.schema.version']).toBe(4);
       expect(span.attributes['agent.run.id']).toBe(first.runId);
     }

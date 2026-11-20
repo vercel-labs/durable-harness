@@ -21,7 +21,7 @@
  *   changes (the link, its loss) is read through closures and getters, never
  *   stored in a property.
  */
-import type { CacheDir, CacheFile, FenceToken, MachineSpawn, MachineTail, SessionMachine } from 'harness-world-process';
+import type { CacheDir, CacheFile, FenceToken, MachineNetwork, MachineSpawn, MachineTail, SessionMachine } from 'harness-world-process';
 import { checkSpawnEnv } from './env-check.ts';
 import { RemoteMachine, fencedToken, type RemoteMachineOptions } from './env.ts';
 import type { RelayLink } from './relay/dial.ts';
@@ -50,6 +50,8 @@ export interface MachineParts {
   notes?: readonly string[];
   /** What `notes` describe (the new Drive's id), for the acknowledgement. */
   notesKey?: string;
+  /** The network policy the attach applied, as `networkSummary` reduces it (`SessionMachine.network`). */
+  network?: MachineNetwork;
   /**
    * Whether the attach may still mutate the VM, asked at every `spawn`,
    * `files.upload` and `files.wipe` on top of `fence` (the session factory's:
@@ -84,6 +86,7 @@ export function sessionMachine(parts: MachineParts): Omit<SessionMachine, 'brand
     modelKey: parts.modelKey,
     notes: Object.freeze([...(parts.notes ?? [])]),
     ...(parts.notes?.length && parts.notesKey !== undefined ? { notesKey: parts.notesKey } : {}),
+    ...(parts.network !== undefined ? { network: parts.network } : {}),
     async spawn(options: MachineSpawn) {
       if (!mutable()) throw unfenced('spawn');
       checkSpawnEnv(options.env, process.env, parts.modelKey);

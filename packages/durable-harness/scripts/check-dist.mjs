@@ -33,9 +33,11 @@ for (const file of readdirSync(join(root, 'dist'), { recursive: true }).filter((
     .split('\n')
     .filter((line) => !/^\s*\*(?:\s|\/|$)/.test(line))
     .join('\n');
-  if (file.endsWith('.d.ts') && /(?:from\s*|import\(\s*)['"]@vercel\/agent-runs(?:\/[^'"]*)?['"]/.test(text)) {
-    console.error(`${file} references optional agent-runs types instead of inlining them`);
-    bad++;
+  for (const peer of ['agent-runs', 'sandbox']) {
+    if (file.endsWith('.d.ts') && new RegExp(`(?:from\\s*|import\\(\\s*)['"]@vercel\\/${peer}(?:\\/[^'"]*)?['"]`).test(text)) {
+      console.error(`${file} references optional ${peer} types instead of inlining them`);
+      bad++;
+    }
   }
   for (const [, fromSpec, dynamicSpec] of text.matchAll(/(?:^|[\s;])(?:import|export)\b[^'"]*?from\s*['"]([^'"./][^'"]*)['"]|import\(\s*['"]([^'"./][^'"]*)['"]\s*\)/gm)) {
     const spec = fromSpec ?? dynamicSpec;

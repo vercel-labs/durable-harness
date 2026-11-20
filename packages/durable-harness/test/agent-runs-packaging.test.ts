@@ -29,7 +29,7 @@ describe('optional Agent Runs setup', () => {
       expect(pkg.peerDependencies[peer]).toBeDefined();
       expect(pkg.peerDependenciesMeta[peer]).toEqual({ optional: true });
     }
-    expect(pkg.devDependencies['@vercel/agent-runs']).toBe('0.0.1');
+    expect(pkg.devDependencies['@vercel/agent-runs']).toBe('1.1.0');
   });
 
   it.each(peers)('names the install line when %s is missing', async peer => {

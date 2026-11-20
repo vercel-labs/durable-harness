@@ -100,7 +100,7 @@ export function expectToolTurn(spans: ReadableSpan[], o: TurnExpect): void {
   expect(roots.length, 'an invoke_agent root per turn').toBeGreaterThanOrEqual(1);
   const root = roots[0]!;
   expect(root.parentSpanContext, 'the root has no parent').toBeUndefined();
-  expect(root.instrumentationScope.name).toBe('eve.agent');
+  expect(root.instrumentationScope.name).toBe('vercel.ai.tracing');
   expect(root.attributes).toMatchObject({
     'agent.framework.name': 'durable-harness',
     'agent.name': o.harness,

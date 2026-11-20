@@ -195,6 +195,31 @@ describe('durable-harness/pi-durable on the environment World (world-local)', ()
     await sse(retried);
   }, 60_000);
 
+  it("a prompt POSTed mid-turn joins the running turn (Pi's whenBusy: 'followUp'): the first stream answers it before its idle", async () => {
+    const work = gate('lookup', 'safe');
+    const app = piApp(
+      [fauxAssistantMessage([fauxText('Looking. '), fauxToolCall('lookup', {})], { stopReason: 'toolUse' }), fauxAssistantMessage([fauxText('It is 42. ')]), fauxAssistantMessage([fauxText('Noted.')])],
+      [work.tool]
+    );
+    const open = resumeWith(app.open, { name: 'pi-mid-prompt' });
+    const route = chatRoute({ open, agent: app.agent, authorize: 'public', name: 'pi-mid-prompt' });
+    const res = await route.POST(post({ text: 'Look it up.' }));
+    const sessionId = res.headers.get('x-session-id')!;
+    const events = sse(res);
+    await until(() => work.started() === 1);
+    const second = await route.POST(post({ sessionId, text: 'Then say noted.' }));
+    expect(second.status).toBe(200);
+    const secondEvents = sse(second);
+    work.release();
+    const all = await events;
+    // One turn: both answers, then a single idle.
+    expect(all.filter((e) => e.data?.type === 'text').map((e) => e.data.delta).join('')).toBe('Looking. It is 42. Noted.');
+    expect(all.filter((e) => e.data?.type === 'idle')).toHaveLength(1);
+    expect(all.at(-1)?.event).toBe('end');
+    await secondEvents;
+    expect(app.faux.state.callCount).toBe(3);
+  }, 60_000);
+
   it('gatewayModels knows the Gateway models', () => {
     const models = gatewayModels({ apiKey: async () => 'not-used' });
     expect(models.getModel(GATEWAY_PROVIDER, 'anthropic/claude-haiku-4.5')).toBeDefined();
