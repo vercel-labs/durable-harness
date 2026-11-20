@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { harnessFiles, VERCEL_TARGET } from '../src/native.ts';
 import { applyDurableHarness } from '../src/next.ts';
 import { flowTrigger, fxTrigger, QUEUE_HOLD_FILE, QUEUE_TOPIC, vercelTriggerConsumerGroup } from '../src/routing.ts';
+import { vercelTriggerConsumerGroup as published } from '@workflow/world-vercel';
 import { queueHoldConsumerGroup } from '../src/queue-hold.ts';
 import { unavailableHint } from '../src/hint.ts';
 import { defaultProjectDir, harnessFunctions, harnessIncludes, vercelJson } from '../src/vercel.ts';
@@ -415,6 +416,7 @@ describe('vercelTriggerConsumerGroup: the consumer group Vercel gives a vercel.j
     ['api/**/*.ts', undefined, 'api_S_2A_2A_S_2A_Dts'],
   ])('%s (service %s) is %s', (pattern, service, group) => {
     expect(vercelTriggerConsumerGroup(pattern, service)).toBe(group);
+    expect(published(pattern, service)).toBe(group);
     expect(group).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });

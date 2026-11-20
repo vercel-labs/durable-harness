@@ -1,4 +1,4 @@
-import type { World } from '@workflow/world';
+import type { HeldQueueMessage, NotHeldQueueMessage, QueueHandler, QueueNotHeldReason, QueueResult, World } from '@workflow/world';
 import { QUEUE_NAME } from './queue.ts';
 
 /**
@@ -9,57 +9,30 @@ import { QUEUE_NAME } from './queue.ts';
  * stands behind it the way it stands behind any delivery: the lease is
  * renewed while the handler runs, and a lapsed lease redelivers the message.
  *
- * The World API is experimental (`@workflow/world`'s `experimental_hold`,
- * the result's `experimental_hold`, `capabilities.experimental_queueHold`) and the World
- * types this package builds against do not carry it yet, so it is typed here,
- * structurally, and detected at run time. A World without the capability
- * never sees the option.
+ * The World API is `@workflow/world`'s, experimental: `experimental_hold` on
+ * `world.queue()`'s options and result, and `capabilities.experimental_queueHold`.
+ * A World without the capability (world-local, world-postgres, the browser)
+ * never sees the option, and keeps the deadline drive and its companion.
  */
 
 /** What a held message's handler is passed: a queue delivery's metadata. */
-export interface HeldDeliveryMeta {
-  attempt: number;
-  deliveryCount?: number;
-  createdAt?: Date;
-  queueName: string;
-  messageId: string;
-  requestId?: string;
-  invocationStartedAt?: number;
-}
-
+export type HeldDeliveryMeta = Parameters<QueueHandler>[1];
 /** `experimental_hold` with `status: 'held'`: a message the queue holds for its sender. */
-export interface HeldMessage {
-  readonly status: 'held';
-  readonly messageId: string;
-  readonly leaseExpiresAt: Date;
-  /** Run `handler` on the message here, as the World's queue handler runs a delivery of it. */
-  consume(handler: (message: unknown, meta: HeldDeliveryMeta) => Promise<unknown>): Promise<void>;
-  /** Give the message back unrun: the queue delivers it after `delaySeconds`. */
-  release(delaySeconds?: number): Promise<void>;
-}
-
-/** Why a held send did not come back held. The queue delivers the message in every case. */
-export type NotHeldReason = 'unsupported' | 'deferred' | 'lost' | 'coalesced' | 'concurrency_limited' | 'duplicate' | 'error';
-
+export type HeldMessage = HeldQueueMessage;
 /** `experimental_hold` with `status: 'not_held'`: the queue delivers the message. */
-export interface NotHeldMessage {
-  readonly status: 'not_held';
-  readonly reason: NotHeldReason | (string & {});
-}
-
+export type NotHeldMessage = NotHeldQueueMessage;
+/** Why a held send did not come back held. The queue delivers the message in every case. */
+export type NotHeldReason = QueueNotHeldReason;
 /**
- * What `world.queue()` resolves with on a World that holds. `experimental_hold`
- * is absent when no hold was asked for or the World ignored it: the queue
- * delivers the message then too.
+ * What `world.queue()` resolves with. `experimental_hold` is absent when no
+ * hold was asked for or the World ignored it: the queue delivers the message
+ * then too.
  */
-export interface HoldQueueResult {
-  messageId: string | null;
-  experimental_hold?: HeldMessage | NotHeldMessage;
-}
+export type HoldQueueResult = QueueResult;
 
 /** Whether `world`'s queue can hold a message for its sender. */
 export function worldHolds(world: World): boolean {
-  return (world.capabilities as { experimental_queueHold?: unknown } | undefined)?.experimental_queueHold === true;
+  return world.capabilities?.experimental_queueHold === true;
 }
 
 /**
@@ -83,6 +56,5 @@ export function queueHoldDisabledByEnv(): boolean {
  * the Function that would have received the message anyway.
  */
 export async function wakeHeld(world: World, runId: string, idempotencyKey: string, consumerGroup: string): Promise<HoldQueueResult> {
-  const queue = world.queue as (name: string, payload: unknown, opts: { idempotencyKey: string; experimental_hold: { consumerGroup: string; visibilityTimeoutSeconds?: number } }) => Promise<HoldQueueResult>;
-  return queue.call(world, QUEUE_NAME, { runId, input: {} }, { idempotencyKey, experimental_hold: { consumerGroup } });
+  return world.queue(QUEUE_NAME, { runId, input: {} }, { idempotencyKey, experimental_hold: { consumerGroup } });
 }

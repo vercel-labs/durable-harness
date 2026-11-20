@@ -123,8 +123,8 @@ export const CONFIG_JSON_CONSUMER = 'default';
  * hex (at least two digits). `api/flow.ts` is `api_Sflow_Dts`.
  *
  * A copy of `@workflow/world-vercel`'s `vercelTriggerConsumerGroup` (and of
- * `@vercel/build-utils`' naming), until a released World carries it; a test
- * pins it.
+ * `@vercel/build-utils`' naming), so the build-time helpers (`next.config`,
+ * `vercel.ts`) don't load the World; a test pins it to the World's.
  */
 export function vercelTriggerConsumerGroup(functionPattern: string, serviceName?: string): string {
   const name = serviceName ? `${serviceName}~${functionPattern}` : functionPattern;

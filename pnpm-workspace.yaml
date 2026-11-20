@@ -28,7 +28,10 @@ minimumReleaseAgeExclude:
 # @workflow/utils 5.0.2), exactly. It carries route-agnostic queue delivery
 # (vercel/workflow#4835: durable-harness's own queue namespace and route),
 # world-local's in-band writer fence across processes (#4834), and
-# world-vercel declaring the fence (#4833). Every @workflow/* package is
+# world-vercel declaring the fence (#4833). @workflow/world-vercel is 5.6.0
+# (with @workflow/world 5.2.1, @workflow/utils 5.1.0 and @workflow/errors
+# 5.1.2, which it pins): the queue's send-and-hold (`experimental_hold`,
+# vercel/workflow#5159), for the chat route's held turns. Every @workflow/* package is
 # overridden too, so one copy of each is installed (eve's and the CLI's
 # dependencies included).
 catalog:
@@ -43,7 +46,7 @@ catalog:
   '@workflow/builders': 5.0.6
   '@workflow/cli': 5.0.6
   '@workflow/core': 5.2.3
-  '@workflow/errors': 5.0.5
+  '@workflow/errors': 5.1.2
   '@workflow/nest': 5.1.4
   '@workflow/next': 5.0.6
   '@workflow/nitro': 5.0.6
@@ -53,13 +56,13 @@ catalog:
   '@workflow/sveltekit': 5.0.6
   '@workflow/swc-plugin': 5.0.1
   '@workflow/typescript-plugin': 5.0.0
-  '@workflow/utils': 5.0.2
+  '@workflow/utils': 5.1.0
   '@workflow/vite': 5.0.6
   '@workflow/web': 5.0.6
-  '@workflow/world': 5.0.5
+  '@workflow/world': 5.2.1
   '@workflow/world-local': 5.1.2
   '@workflow/world-postgres': 5.0.5
-  '@workflow/world-vercel': 5.2.3
+  '@workflow/world-vercel': 5.6.0
   'workflow': 5.2.3
 overrides:
   '@workflow/astro': 'catalog:'
