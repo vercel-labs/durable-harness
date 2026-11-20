@@ -3,8 +3,8 @@ import { dirname, join, relative, sep } from 'node:path';
 import { isVercelWorldTarget, resolveWorkflowTargetWorld } from '@workflow/utils';
 import type { NextConfig } from 'next';
 import { harnessFiles, hostTarget, resolves } from './native.ts';
-import { FLOW_ROUTE, flowFunctionConfig, FX_ROUTE, type GeneratedRoute, LIBFX_QUEUE_PREFIX, LIBFX_TOPIC, QUEUE_TOPIC, WORKFLOW_FLOW_ROUTE } from './routing.ts';
-import { type AppPlan, appPlan, exportsFxAgent, fxAgentNames, type FxModule, fxCalls, MARK, nameOf, nextFunctions, readText, ROUTE_EXTENSIONS, routeDir, routeKey, triggerConfigured } from './scan.ts';
+import { FLOW_ROUTE, flowFunctionConfig, FX_ROUTE, type GeneratedRoute, LIBFX_QUEUE_PREFIX, LIBFX_TOPIC, QUEUE_HOLD_FILE, QUEUE_TOPIC, WORKFLOW_FLOW_ROUTE } from './routing.ts';
+import { type AppPlan, appPlan, exportsFxAgent, fxAgentNames, type FxModule, fxCalls, MARK, nameOf, nextFunctions, nextHoldConsumerGroup, readText, ROUTE_EXTENSIONS, routeDir, routeKey, triggerConfigured, writeQueueHold } from './scan.ts';
 import { excludeLocalWorld } from './trace.ts';
 
 /**
@@ -134,13 +134,21 @@ export function applyDurableHarness(config: NextConfig, phase: Phase, projectDir
   // where its Functions run): OpenCode's tree-sitter grammars, which
   // Turbopack's trace finds and webpack's does not.
   const files = unique(harnessFiles(projectDir, hostTarget()).flatMap((h) => h.files)).map((file) => tracePath(projectDir, file));
-  if (files.length > 0) {
+  // The consumer group of the flow route's trigger, which a chat route's held
+  // wakes are claimed for (queue-hold.ts): recorded at build, traced into the
+  // chat routes. Unknown (routes of the app's own, a config this cannot
+  // read): nothing recorded, nothing held.
+  const holdGroup = options.flowRoute !== false ? nextHoldConsumerGroup(projectDir, plan) : undefined;
+  const add = (route: string, more: string[]) => {
+    if (more.length === 0) return;
     const includes: Record<string, string[]> = { ...(config.outputFileTracingIncludes ?? {}) };
-    for (const route of drives) includes[globOf(route)] = unique([...(includes[globOf(route)] ?? []), ...files]);
+    includes[globOf(route)] = unique([...(includes[globOf(route)] ?? []), ...more]);
     config.outputFileTracingIncludes = includes;
-  }
+  };
+  for (const route of drives) add(route, [...files, ...(holdGroup !== undefined && route !== plan.flowRoute ? [`./${QUEUE_HOLD_FILE}`] : [])]);
 
   if (writes) checkPiOpener(projectDir, plan);
+  if (writes) writeQueueHold(projectDir, holdGroup);
   if (writes && options.flowRoute !== false) {
     if (plan.fxModules.length > 0 && plan.fx.length > 0) checkFxAgents(projectDir, plan);
     if (plan.layout === 'workflow') writeWorkflowLayout(projectDir, plan);

@@ -7,6 +7,9 @@ import type { SessionLog } from './session-log.ts';
  * after its response, instead of a queue hop to the flow route. The drive
  * holds no queue message: it runs under a deadline anchor (anchor.ts), and
  * the companion its submit sent, delayed past that deadline, is its backstop.
+ * On a World whose queue holds a message for its sender (hold.ts), the
+ * submit's wake is held instead and runs here as that message's delivery;
+ * the drive this route starts waits for it (`DurableSessions.drive`).
  *
  * One drive per session per process is the kernel's (`deliver`): a drive
  * that lands while the session drives here acks, and the drive under way
