@@ -504,7 +504,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     // Codex's key: the attach's model key, which the relay checks (its hash armed the relay; only the attach's processes may use it). Never a credential: the handler adds that.
     const key = machine.modelKey;
     // A `never` tool waits for the journal: its call is in the log before its intent (the barrier ran first, below).
-    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush() });
+    // The app's tools reach the Drive Codex works on (`HostToolIO.workspace`).
+    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), workspace: machine.workspace });
     /** What the model must hear about this attach (a lost Drive), once per invocation, with its first message; acknowledged after that turn. */
     let notes = machine.notes.length && !invocation.notesShown ? machine.notes.map((n) => `[Sandbox] ${n}`).join('\n') : undefined;
     let proc: SessionProcess | undefined;

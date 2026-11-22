@@ -79,6 +79,18 @@ redelivers.
 tools (`tools: []`), and the system prompt says so (`TOOLS_NOTE`, or
 `NO_TOOLS_NOTE` with no tools at all).
 
+**The app's tools reach the Drive.** A `HostTool` runs in the Function, and
+its `io.workspace` is the session's `/workspace` in the VM (the machine's
+`workspace`: files and commands, the same interface as `virtual()`'s), so a
+tool can read what the model's commands wrote, run a check, or stage a
+change. Its commands run in the VM as the unprivileged user, beside the CLI
+and the model's commands, so their `env` passes the same credential checks
+as every other command: a credential is refused (a `TypeError` naming the
+key) and stays in the Function. A tool that needs one does that part
+itself in the Function (to push a branch: `git bundle create` on the
+Drive, `readFile` the bundle, push it from the Function). A tool that
+changes the Drive is `replay: 'never'`.
+
 **With `builtins: true`**, Claude Code's own tools are on in the VM, on
 `/workspace`: the pinned allowlist `CLAUDE_BUILTINS` (Bash, Read, Edit,
 Write, NotebookEdit, WebFetch), checked against the pinned CLI's

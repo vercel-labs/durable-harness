@@ -1,4 +1,5 @@
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy } from 'harness-world';
+import type { WorkspaceMachine } from 'harness-world-hands/runtime';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -53,6 +54,12 @@ export interface ToolBridgeOptions {
   live?: boolean;
   /** How much of a partial output an interrupted result quotes. Default 2000 characters. */
   partialChars?: number;
+  /**
+   * The session's workspace (`SessionMachine.workspace`, the Drive), given to
+   * every call as `HostToolIO.workspace`. Default none: a harness that
+   * attached no machine leaves it out.
+   */
+  workspace?: WorkspaceMachine;
 }
 
 export interface ToolBridge {
@@ -105,7 +112,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
             ...(tool.requires ? { requires: tool.requires } : {}),
             ...(tool.needs?.length ? { needs: tool.needs } : {}),
           },
-          (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
+          (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal, ...(options.workspace ? { workspace: options.workspace } : {}) }))
         );
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
         return { text: String(text), isError: false };
