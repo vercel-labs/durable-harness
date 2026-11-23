@@ -138,8 +138,13 @@ jobs:
       # Cross-check every publishable manifest on this commit against the
       # registry, whatever the publish step's outcome, so the job says exactly
       # what is missing.
+      # After a failed publish nothing is on its way to the registry, so one
+      # look is enough: waiting out npm's propagation window there only delays
+      # the red run by ten minutes.
       - name: Verify every package version on this commit is on npm
         if: ${{ !cancelled() && steps.npm.outputs.exists == 'true' && steps.mode.outcome == 'success' }}
+        env:
+          CHECK_PUBLISHED_ATTEMPTS: ${{ steps.publish.outcome == 'failure' && '1' || '20' }}
         run: node scripts/check-published.mjs
 
       # The version sub-action commits every file that differs from this
