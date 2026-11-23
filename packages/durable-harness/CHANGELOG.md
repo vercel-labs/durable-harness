@@ -1,5 +1,11 @@
 # durable-harness
 
+## 0.0.3
+
+### Patch Changes
+
+- [#63](https://github.com/vercel-labs/durable-harness/pull/63) [`5440b9d`](https://github.com/vercel-labs/durable-harness/commit/5440b9daf1c3136e7cf6ce3d79165ec7e82c55c0) Thanks [@chadhietala](https://github.com/chadhietala)! - Agent Runs tracing (`agentRuns()` from `/instrumentation/otel`) uses `@vercel/agent-runs@1.1.0` and writes its spans under the library's default `vercel.ai.tracing` instrumentation scope, the one Vercel Agent Runs reads, instead of `eve.agent`. Upgrade the optional peer to 1.1.0 (`pnpm add @vercel/agent-runs@1.1.0`): with 0.0.1 installed, spans use that version's default `agent.tracing` scope and no longer appear in Agent Runs.
+
 ## 0.0.2
 
 ### Patch Changes
