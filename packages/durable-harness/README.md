@@ -99,6 +99,9 @@ in the session's own Vercel Sandbox (`sandbox()`), never on the machine that
 drives the session. See [tools](https://vercel.com/docs/agent-harnesses/tools)
 and [security](https://vercel.com/docs/agent-harnesses/security).
 
+Community harnesses built on durable-harness:
+[nanocode](https://nanocode.xyz/docs/guides/vercel) (`nanocode-ts/vercel`).
+
 ## Sending messages
 
 A message goes to a session as one of three kinds: `prompt` (the default),
