@@ -23,6 +23,7 @@ import {
 } from './docs.ts';
 import { type Mark, type MarkName, mark } from './marks.ts';
 import { workflowNameFor } from './names.ts';
+import { effectIdempotencyKey } from './idempotency.ts';
 import type { StartOptions, UpdateDocOptions } from './sessions.ts';
 import type {
   DriveContext,
@@ -245,6 +246,7 @@ export function rawSessions(options: RawSessionsOptions): RawSessions {
       const io: EffectIO = {
         signal: new AbortController().signal,
         stepId,
+        idempotencyKey: () => effectIdempotencyKey(entry.id, key),
         progress: () => {},
         park: async () => {
           throw new Error('harness-world raw: parking needs a World (durability is off)');
