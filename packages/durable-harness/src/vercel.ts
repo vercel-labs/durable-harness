@@ -2,8 +2,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isBuiltin } from 'node:module';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { harnessFiles, includeGlob, packageDir, type Target, VERCEL_TARGET } from './native.ts';
-import { FLOW_MAX_DURATION, flowTrigger, type fxTrigger } from './routing.ts';
-import { appPlan, nextFunctions } from './scan.ts';
+import { FLOW_MAX_DURATION, flowTrigger, type fxTrigger, QUEUE_HOLD_FILE, vercelTriggerConsumerGroup } from './routing.ts';
+import { appPlan, nextFunctions, writeQueueHold } from './scan.ts';
 
 /**
  * durable-harness/vercel: the `functions` config durable-harness's queue
@@ -89,6 +89,17 @@ export interface HarnessFunctionsOptions {
 
 /** The `functions` entries for the flow function and the chat functions. */
 export function harnessFunctions(options: HarnessFunctionsOptions = {}): Record<string, HarnessFunctionConfig> {
+  return functionsFor(options, true);
+}
+
+/**
+ * `harnessFunctions`. `record`: at build (`vercel.ts`), record the flow
+ * function's consumer group for the chat functions' held wakes and trace it
+ * into them; not for a `vercel.json` written ahead of time, where nothing
+ * runs at build to record it (held wakes then need
+ * `DURABLE_HARNESS_QUEUE_HOLD_GROUP`, see queue-hold.ts).
+ */
+function functionsFor(options: HarnessFunctionsOptions, record: boolean): Record<string, HarnessFunctionConfig> {
   const projectDir = options.projectDir ?? defaultProjectDir();
   // A file that is not there would fail the deploy later, and less clearly
   // (or, in the wrong project directory, leave every function without its files).
@@ -114,8 +125,12 @@ export function harnessFunctions(options: HarnessFunctionsOptions = {}): Record<
     if (!existsSync(join(projectDir, file))) throw new Error(`durable-harness/vercel: no chat function ${file} in ${projectDir}`);
   }
   const installed = harnessFiles(projectDir, options.target ?? VERCEL_TARGET);
-  const files = (only?: Set<string>) => {
-    const include = checked(includeGlob(projectDir, installed.filter((h) => !only || only.has(h.harness)), options.includeFiles));
+  // The consumer group Vercel gives the flow function's trigger (named
+  // after this `functions` key), for the chat functions' held wakes: recorded
+  // here, at build, and traced into each chat function (queue-hold.ts).
+  if (record) writeQueueHold(projectDir, vercelTriggerConsumerGroup(flow));
+  const files = (only?: Set<string>, chatFunction = false) => {
+    const include = checked(includeGlob(projectDir, installed.filter((h) => !only || only.has(h.harness)), [...(options.includeFiles ?? []), ...(chatFunction && record ? [QUEUE_HOLD_FILE] : [])]));
     return include ? { includeFiles: include } : {};
   };
   const functions: Record<string, HarnessFunctionConfig> = {
@@ -123,8 +138,8 @@ export function harnessFunctions(options: HarnessFunctionsOptions = {}): Record<
   };
   for (const file of chat) {
     if (file === flow) continue;
-    // Vercel refuses an entry with no settings: a chat function that needs no files (Pi's) gets none.
-    const config = files(harnessesOf(projectDir, file));
+    // Vercel refuses an entry with no settings: a chat function that needs no files (Pi's, outside a build) gets none.
+    const config = files(harnessesOf(projectDir, file), true);
     if (Object.keys(config).length > 0) functions[file] = config;
   }
   return functions;
@@ -287,7 +302,7 @@ function sourceFile(dir: string, spec: string): string | undefined {
 
 /** `{ functions }` for `vercel.json` (what `npx durable-harness vercel-json` prints). */
 export function vercelJson(options: HarnessFunctionsOptions = {}): { functions: Record<string, HarnessFunctionConfig> } {
-  return { functions: harnessFunctions(options) };
+  return { functions: functionsFor(options, false) };
 }
 
 /** What Vercel makes a Node.js Function of under `api/` (not `.mts`, `.cjs`, …, nor a `.d.ts`). */
